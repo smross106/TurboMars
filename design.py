@@ -41,9 +41,9 @@ def radial_smyth_optimisation(input_args, *args):
 
 def make_axial(input_args, *args, output=False):
     (speed, work_coeff, flow_coeff) = input_args
-    (gasflow_in, work_stage, efficiency) = args
+    (gasflow_in, pressure_ratio_stage, efficiency) = args
 
-    axial = component.AxialStage(gasflow_in, work_stage, speed, work_coeff, flow_coeff, efficiency)
+    axial = component.AxialStage(gasflow_in, pressure_ratio_stage, speed, work_coeff, flow_coeff, efficiency)
 
     # Assume everything is 7075 aluminium
     yield_stress = 381e6 # Safety factor of 1.5
@@ -51,7 +51,7 @@ def make_axial(input_args, *args, output=False):
 
     axial_weight = axial.weight_estimate()
 
-    input_power = gasflow_in.mass_flow * work_stage / axial.estimate_efficiency()
+    input_power = gasflow_in.mass_flow * axial.work_stage / axial.estimate_efficiency()
     ESM_power_weight = input_power * .121
 
     constraint_weight = 0
@@ -87,9 +87,9 @@ def make_axial(input_args, *args, output=False):
 
 def make_radial(input_args, *args, output=False):
     (speed, work_coeff, flow_coeff, radius_hub_inlet, diffusion_ratio) = input_args
-    (gasflow_in, work_stage, efficiency) = args
+    (gasflow_in, pressure_ratio_stage, efficiency_guess) = args
 
-    radial = component.RadialStage(gasflow_in, work_stage, speed, work_coeff, flow_coeff, efficiency, radius_hub_inlet, diffusion_ratio=diffusion_ratio)
+    radial = component.RadialStage(gasflow_in, pressure_ratio_stage, speed, work_coeff, flow_coeff, efficiency_guess, radius_hub_inlet, diffusion_ratio=diffusion_ratio)
 
     # Assume everything is 7075 aluminium
     yield_stress = 381e6 # Safety factor of 1.5
@@ -97,7 +97,7 @@ def make_radial(input_args, *args, output=False):
 
     radial_weight = radial.weight_estimate(yield_stress, density)
 
-    input_power = gasflow_in.mass_flow * work_stage / radial.estimate_efficiency()
+    input_power = gasflow_in.mass_flow * radial.work_stage / radial.estimate_efficiency()
     ESM_power_weight = input_power * .121
 
     constraint_weight = 0
@@ -162,7 +162,7 @@ def make_heat_exchanger_anypd(input_args, *args, output=False):
 
 
     HX = component.HeatExchangerAdvanced(cooling_power, gasflow, inlet_area, 
-        bulk_area_ratio, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="VLT")
+        bulk_area_ratio, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="supercrit He")
 
     HX.gas_pressure_drop()
     HX.coolant_pumping_power()
@@ -217,17 +217,27 @@ def make_heat_exchanger_pd(input_args, *args, output=False):
     (bulk_area_ratio, coolant_velocity, gap_diameter_ratio) = input_args
     (cooling_power, gasflow, inlet_area, target_pressure_drop_relative) = args
 
-    coolant_velocity = abs(coolant_velocity)
-
-    if coolant_velocity > 1:
-        coolant_velocity = 1
+    limit_weight = 0
+    if bulk_area_ratio < 1:
+        limit_weight += np.power(bulk_area_ratio-1, 2)*1e50
+    elif bulk_area_ratio > 15:
+        limit_weight += np.power(bulk_area_ratio-50, 2)*1e50
     
-    if bulk_area_ratio > 15:
-        bulk_area_ratio = 15
-
+    if coolant_velocity < 0.1:
+        limit_weight += np.power(coolant_velocity-0.1, 2)*1e50
+    elif coolant_velocity > 1:
+        limit_weight += np.power(coolant_velocity-1, 2)*1e50
+    
+    if gap_diameter_ratio < 0.1:
+        limit_weight += np.power(gap_diameter_ratio-0.1, 2)*1e50
+    elif gap_diameter_ratio >50:
+        limit_weight += np.power(gap_diameter_ratio-50, 2)*1e50
+    
+    if limit_weight != 0:
+        return(limit_weight)
 
     HX = component.HeatExchangerAdvanced(cooling_power, gasflow, inlet_area, 
-        bulk_area_ratio, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="VLT")
+        bulk_area_ratio, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="supercrit He")
 
     HX.gas_pressure_drop()
     HX.coolant_pumping_power()
@@ -243,28 +253,14 @@ def make_heat_exchanger_pd(input_args, *args, output=False):
 
     constraint_weight = 0
 
-    constraint_weight += np.power(target_PD - HX.pressure_drop, 2) * 1e3
+    constraint_weight += np.power(target_PD - HX.pressure_drop, 2) * 1e20
 
-    if gap_diameter_ratio < 0.1:
-        constraint_weight += np.power(gap_diameter_ratio - 0.1, 4) * 1e30
-    elif gap_diameter_ratio > 50:
-        constraint_weight += abs(gap_diameter_ratio - 50) **2 * 1e6
     
-    if ((gap_diameter_ratio+1) * HX.tube_diameter) > HX.duct_size:
-        constraint_weight += 1e30
+    # if ((gap_diameter_ratio+1) * HX.tube_diameter) > HX.duct_size:
+    #     constraint_weight += 1e30
     
-    if bulk_area_ratio < 1:
-        constraint_weight += 1e30
-    elif bulk_area_ratio > 15:
-        constraint_weight += (bulk_area_ratio) * 1e6
-    
-    if coolant_velocity < 0.1:
-        constraint_weight += 1e20
-    elif coolant_velocity > 2:
-        constraint_weight += (coolant_velocity - 2) * 1e10
-    
-    if (HX.duct_length + HX.diffuser_length + HX.nozzle_length) > 3:
-        constraint_weight += np.power((HX.duct_length + HX.diffuser_length + HX.nozzle_length - 3), 2) * 1e10
+    # if (HX.duct_length + HX.diffuser_length + HX.nozzle_length) > 3:
+    #     constraint_weight += np.power((HX.duct_length + HX.diffuser_length + HX.nozzle_length - 3), 2) * 1e10
     
     if output:
         return(hx_weight + ESM_power_weight + ESM_volume_weight)
@@ -272,15 +268,16 @@ def make_heat_exchanger_pd(input_args, *args, output=False):
         return(hx_weight + ESM_power_weight + ESM_volume_weight + constraint_weight)
 
 
-def optimise_axial(flow_in, deltah, efficiency):
+def optimise_axial(flow_in, pressure_ratio_stage, efficiency_guess):
     specific_speed = 2.0
     specific_diameter = 2.0
+
+    deltah = flow_in.delta_h_PR(pressure_ratio_stage) / efficiency_guess
 
     speed_guess = specific_speed / (np.sqrt(flow_in.mass_flow / flow_in.density_deltah(deltah)) * np.power(deltah, -0.75)) 
     work_coeff_guess = 1 / np.power(specific_speed * specific_diameter, 2)
     flow_coeff_guess = 1 / (specific_speed * np.power(specific_diameter, 3))
 
-    #crude_weight = make_axial([speed_guess, work_coeff_guess, flow_coeff_guess], flow_in, deltah, efficiency)
     x0 = np.array([speed_guess, work_coeff_guess, flow_coeff_guess])
     x0_upper = np.array([99.9e3, 0.6, 2])
     N = len(x0)
@@ -297,28 +294,25 @@ def optimise_axial(flow_in, deltah, efficiency):
 
     properties = optimize.minimize(make_axial, 
         x0, 
-        args=(flow_in, deltah, efficiency),
-        #bounds=[(0, 100e3), (0, 0.5), (0, 2)], 
-        #constraints=cons, method="SLSQP"
-        #constraints=object_cons, method="trust-constr", jac="3-point", hess=optimize.BFGS(), options={"maxiter":1500}
+        args=(flow_in, pressure_ratio_stage, efficiency_guess),
         method="Nelder-Mead", options={"maxiter":10000, "initial_simplex":sim}
         )
 
 
     (speed, work_coeff, flow_coeff) = properties.x
 
-    axial = component.AxialStage(flow_in, deltah, speed, work_coeff, flow_coeff, efficiency)
+    axial = component.AxialStage(flow_in, pressure_ratio_stage, speed, work_coeff, flow_coeff, efficiency_guess)
     axial.weight_estimate()
     axial.estimate_efficiency()
     axial.ESM_estimate()
-    #opt_weight = make_axial([speed, work_coeff, flow_coeff], flow_in, deltah, efficiency)
 
-    #return([crude_weight, opt_weight, axial])
     return(axial)
 
-def optimise_radial(flow_in, deltah, efficiency):
+def optimise_radial(flow_in, pressure_ratio_stage, efficiency_guess):
     specific_speed = 0.5
     specific_diameter = 5.0
+
+    deltah = flow_in.delta_h_PR(pressure_ratio_stage) / efficiency_guess
 
     speed_guess = min((specific_speed / ((np.sqrt(flow_in.mass_flow / flow_in.density_deltah(deltah)) * np.power(deltah, -0.75)) )) * 30 / np.pi, 99e3)
     work_coeff_guess = 1 / np.power(specific_speed * specific_diameter, 2)
@@ -344,30 +338,21 @@ def optimise_radial(flow_in, deltah, efficiency):
 
     properties = optimize.minimize(make_radial, 
         x0, 
-        args=(flow_in, deltah, efficiency),
+        args=(flow_in, pressure_ratio_stage, efficiency_guess),
         bounds=[(1, 100e3), (0.1, 0.85), (0.2, 2), (10e-3, 1), (1, 15)],
         method="Nelder-Mead", options={"maxiter": 10000, "disp":False, "adaptive":False, "return_all":False, "xatol":1e-4, "initial_simplex":sim}
         #method='SLSQP'
         #constraints=object_cons, method="trust-constr", jac="3-point", hess=optimize.BFGS(), options={"maxiter":2000}
         )
-    """properties = optimize.basinhopping(make_radial, 
-        x0=[speed_guess, work_coeff_guess, flow_coeff_guess, inlet_hub_radius_guess, diffusion_ratio_guess],
-        niter=n_iter_try,
-        minimizer_kwargs={
-                "method":"Nelder-Mead",
-                "args":(flow_in, deltah, efficiency)},
-        )"""
     
     #print(properties)
     
     (speed, work_coeff, flow_coeff, inlet_hub_radius, diffusion_ratio) = properties.x
 
-    radial = component.RadialStage(flow_in, deltah, speed, work_coeff, flow_coeff, efficiency, inlet_hub_radius, diffusion_ratio)
+    radial = component.RadialStage(flow_in, pressure_ratio_stage, speed, work_coeff, flow_coeff, efficiency_guess, inlet_hub_radius, diffusion_ratio)
     radial.weight_estimate(381e6, 2810)
     radial.estimate_efficiency()
     radial.ESM_estimate()
-
-    #opt_weight = make_radial([speed, work_coeff, flow_coeff, inlet_hub_radius], flow_in, deltah, efficiency, output=True)
 
     return(radial)
 
@@ -422,15 +407,15 @@ def optimise_hx_anypd(flow_in, cooling_deltah, inlet_area):
 
 def optimise_hx_pd(flow_in, cooling_deltah, inlet_area, target_PD):
     
-    bulk_area_guess = inlet_area * 2
+    bulk_area_guess = 2
     coolant_velocity_guess = 1
-    pitch_diameter_ratio_guess = 10
+    gap_diameter_ratio_guess = 5
 
     cooling_power = flow_in.mass_flow * cooling_deltah
 
 
-    x0 = np.array([bulk_area_guess, coolant_velocity_guess, pitch_diameter_ratio_guess])
-    x0_upper = np.array([bulk_area_guess*15, 2, 50])
+    x0 = np.array([bulk_area_guess, coolant_velocity_guess, gap_diameter_ratio_guess])
+    x0_upper = np.array([15, 1, 50])
     N = len(x0)
     zdelt = 0.00025
     sim = np.empty((N + 1, N), dtype=x0.dtype)
@@ -447,18 +432,19 @@ def optimise_hx_pd(flow_in, cooling_deltah, inlet_area, target_PD):
     properties = optimize.minimize(make_heat_exchanger_pd, 
         x0, 
         args=(cooling_power, flow_in, inlet_area, target_PD) ,
-        bounds=[(1e-7, 10), (0.1, 3), (1.1, 50)],
-        method="Nelder-Mead", options={"maxiter": 10000, "disp":False, "adaptive":False, "return_all":False, "xatol":1e-4, "initial_simplex":sim}
+        bounds=[(1e-7, 10), (0.1, 1), (1.1, 50)],
+        method="Nelder-Mead", options={"maxiter": 10000, "disp":False, "adaptive":False, 
+        "return_all":False, "initial_simplex":sim, "bounds":[(1, 15), (0.1, 1), (1.1, 50)]}
         #method='SLSQP'
         #constraints=object_cons, method="trust-constr", jac="3-point", hess=optimize.BFGS(), options={"maxiter":2000}
         )
 
     #print(properties)
     
-    (bulk_area, coolant_velocity, pitch_diameter_ratio) = properties.x
+    (bulk_area, coolant_velocity, gap_diameter_ratio) = properties.x
 
     HX = component.HeatExchangerAdvanced(cooling_power, flow_in, inlet_area, 
-        bulk_area, pitch_diameter_ratio=pitch_diameter_ratio, coolant_velocity=coolant_velocity)
+        bulk_area, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="supercrit He")
     HX.gas_pressure_drop()
     HX.coolant_pumping_power()
     HX.weight_estimate()

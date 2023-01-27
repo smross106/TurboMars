@@ -27,9 +27,49 @@ from CoolProp.Plots import PropertyPlot
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import ticker, cm, colors
-from component import HeatExchangerAdvanced, GasFlow
 
-p_co2 = [2695, 4727, 7934, 12805, 19948, 30106, 44156, 63111, 88119, 81317098, 0, 0, 25069347, 71847802, 128805935, 168665455]
+from component import HeatExchangerAdvanced, GasFlow
+from design import *
+
+
+flowin = GasFlow(0.05, 250, 5000)
+
+pd_range = np.linspace(0.01, 0.2, 20)#[0.02, 0.05, 0.1, 0.15, 0.2]
+weight_range = []
+length_range = []
+power_range = []
+ESM_range = []
+
+for pd in pd_range:
+    hx1 = optimise_hx_pd(flowin, 870*50, 1e-2, pd)
+    #print(hx1)
+    #print(hx1.coolant_velocity)
+    weight_range.append(hx1.weight)
+    length_range.append(hx1.duct_length + hx1.diffuser_length + hx1.nozzle_length)
+    power_range.append(hx1.pumping_power)
+    ESM_range.append(hx1.ESM)
+
+print(min(ESM_range), min(weight_range), min(power_range), min(length_range))
+
+figs, axs = plt.subplots(2, 2)
+axs[0,0].plot(pd_range, weight_range)
+axs[0,0].set_ylabel("Weight (kg)")
+axs[0,0].set_ylim(0, 3000)
+
+axs[0,1].plot(pd_range, length_range)
+axs[0,1].set_ylabel("Length (m)")
+axs[0,1].set_ylim(0, 50)
+
+axs[1,0].plot(pd_range, weight_range)
+axs[1,0].set_ylabel("Power (W)")
+axs[1,0].set_ylim(0, 1500)
+
+axs[1,1].plot(pd_range, ESM_range)
+axs[1,1].set_ylabel("ESM (kg-e)")
+axs[1,1].set_ylim(0, 4000)
+plt.show()
+
+"""p_co2 = [2695, 4727, 7934, 12805, 19948, 30106, 44156, 63111, 88119, 81317098, 0, 0, 25069347, 71847802, 128805935, 168665455]
 s_co2 = [3.283, 3.165, 3.056, 2.955, 2.861, 2.774, 2.693, 2.616, 2.545, 2.477, 2.413, 2.352, 2.292, 2.234, 2.177, 2.138]
 T_co2 = [143.15, 148.15, 153.15, 158.15, 163.15, 168.15, 173.15, 178.15, 183.15, 188.15, 193.15, 198.15, 203.15, 208.15, 213.15, 216.55]
 
@@ -79,7 +119,7 @@ for T_index, T in enumerate(T_range):
         
         L_power_q_D[T_index, v_index] = L_power
         L_D_0_1[T_index, v_index] = L_real
-
+"""
 
 """fig, ax = plt.subplots()
 plt.plot(T_range, p_range/1000)
@@ -102,14 +142,14 @@ plt.xlabel("Gas temperature (K)")
 plt.ylabel("Gas velocity in cylinder (m/s)")
 plt.colorbar()"""
 
-fig, ax = plt.subplots()
+"""fig, ax = plt.subplots()
 print(np.amax(L_D_0_1))
 print(np.amin(L_D_0_1))
 cs = plt.contourf(T_range, v_range, np.transpose(L_D_0_1),  locator=ticker.LogLocator(numticks=27))
 plt.colorbar()
 plt.xlabel("Gas temperature (K)")
 plt.ylabel("Gas velocity in cylinder (m/s)")
-plt.title("Piston L, D=10mm")
+plt.title("Piston L, D=10mm")"""
 
 """p = cs.collections[3].get_paths()[0]
 
@@ -123,7 +163,7 @@ print(y)
 fig, ax = plt.subplots()
 plt.plot(x,y)"""
 
-fig, ax = plt.subplots()
+"""fig, ax = plt.subplots()
 plt.plot(T_range, d_range)
 
-plt.show()
+plt.show()"""

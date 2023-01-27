@@ -23,7 +23,7 @@ for i in range(10):
     PR = 2.0
     # ax1 = design.optimise_axial(flow, flow.delta_h_PR(1.1), 0.85)
 
-    rad1 = design.optimise_radial(flow_cold, flow_cold.delta_h_PR(PR), 0.85)
+    rad1 = design.optimise_radial(flow_cold, PR, 0.85)
 
     print("Radial",str(i+1))
     #print(2000*rad1.R_mean_inlet, 2000*rad1.R_mean_imp_exit, 2000*rad1.R_stator_exit, 1000*rad1.bladeheight_imp_exit, rad1.speed, rad1.efficiency, rad1.weight, rad1.power)
@@ -39,7 +39,7 @@ for i in range(10):
     HX_PR = 0
     best_hx = None
     for PR in HX_PR_range:
-        hx1 = design.optimise_hx_anypd(flow_hot, flow_hot.delta_h_delta_T(abs(250-flow_hot.temperature)), rad1.A_stator_exit, PD)
+        hx1 = design.optimise_hx_pd(flow_hot, flow_hot.delta_h_delta_T(abs(250-flow_hot.temperature)), rad1.A_stator_exit, PR)
         if hx1.ESM < best_HX_ESM:
             best_HX_ESM = hx1.ESM
             best_hx = hx1

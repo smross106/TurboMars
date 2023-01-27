@@ -67,16 +67,19 @@ class Component(object):
         pass
 
 class AxialStage(Component):
-    def __init__(self, gasflow_in, work_stage, speed, work_coeff, flow_coeff, efficiency):
+    def __init__(self, gasflow_in, pressure_ratio_stage, speed, work_coeff, flow_coeff, efficiency_guess):
         self.gasflow_in = gasflow_in
 
-        self.work_stage = work_stage
+        self.pressure_ratio_stage = pressure_ratio_stage
+
+        self.work_stage = self.gasflow_in.delta_h_PR(self.pressure_ratio_stage) / efficiency_guess
+
         self.speed = speed
         self.speed_rad = speed * np.pi / 30
         self.work_coeff = work_coeff
         self.flow_coeff = flow_coeff
 
-        self.efficiency = efficiency
+        self.efficiency = efficiency_guess
 
         self.R_mean_in = 0
         self.Vx_in = 0
@@ -206,16 +209,19 @@ class AxialStage(Component):
         return(out_str)
 
 class RadialStage(Component):
-    def __init__(self, gasflow_in, work_stage, speed, work_coeff, flow_coeff, efficiency, radius_hub_inlet, diffusion_ratio=3):
+    def __init__(self, gasflow_in, pressure_ratio_stage, speed, work_coeff, flow_coeff, efficiency_guess, radius_hub_inlet, diffusion_ratio=3):
         self.gasflow_in = gasflow_in
 
-        self.work_stage = work_stage
+        self.pressure_ratio_stage = pressure_ratio_stage
+
+        self.work_stage = self.gasflow_in.delta_h_PR(self.pressure_ratio_stage) / efficiency_guess
+
         self.speed = speed
         self.speed_rad = speed * np.pi / 30
         self.flow_coeff = flow_coeff
         self.work_coeff = work_coeff
 
-        self.efficiency = efficiency
+        self.efficiency = efficiency_guess
         
         self.R_hub_inlet = radius_hub_inlet
 
@@ -496,7 +502,7 @@ class HeatExchanger(Component):
 class HeatExchangerAdvanced(Component):
     def __init__(self, cooling_power, airflow, inlet_area, bulk_area_ratio, 
             tube_diameter=2e-3, pitch_diameter_ratio=1.25, 
-            wall_thickness=0.04e-3, wall_thermal_conductivity=400, geometry="wall",
+            wall_thickness=40e-6, wall_thermal_conductivity=300, geometry="wall",
             coolant="VLT", coolant_velocity=2, neglect_peak_velocity=False):
         self.cooling_power = cooling_power
         self.airflow = airflow
@@ -944,7 +950,7 @@ class HeatExchangerAdvanced(Component):
             a = -1.8 * np.log(6.9/Re_tubes + np.power(rough / 3.7, 1.11))
             f = 1 / np.power(a, 2)
         else:
-            print(Re_tubes, bulk_velocity, self.bulk_area)
+            #print(Re_tubes, bulk_velocity, self.bulk_area)
             rough = 0.3 * self.tube_diameter / D_hydraulic
             a = -1.8 * np.log(6.9/Re_tubes + np.power(rough / 3.7, 1.11))
             f = 1 / np.power(a, 2)
