@@ -48,7 +48,7 @@ class GasFlow(object):
     def density_static(self, velocity):
         mach = velocity / self.speed_sound()
         rho_stag = self.density()
-        rho_static = rho_stag * np.power(1 + self.gm1/2 * mach**2, -1/self.gm1)
+        rho_static = rho_stag * np.power(1 + self.gm1/2 * mach**2, 1/self.gm1)
 
         return(rho_static)
     
@@ -96,6 +96,8 @@ class AxialStage(Component):
         self.bladeheight_in = self.A_in / (2 * np.pi * self.R_mean_in)
         self.R_tip_in = self.R_mean_in + (self.bladeheight_in/2)
         self.R_hub_in = self.R_mean_in - (self.bladeheight_in/2)
+
+        self.A_stator_exit = self.A_in
 
     def weight_estimate(self):
         diameter = self.R_mean_in * 2
@@ -492,15 +494,16 @@ class HeatExchanger(Component):
         return(hx_weight)
 
 class HeatExchangerAdvanced(Component):
-    def __init__(self, cooling_power, airflow, inlet_area, bulk_area, 
+    def __init__(self, cooling_power, airflow, inlet_area, bulk_area_ratio, 
             tube_diameter=2e-3, pitch_diameter_ratio=1.25, 
-            wall_thickness=0.2e-3, wall_thermal_conductivity=400, geometry="wall",
-            glycol=False, coolant_velocity=2):
+            wall_thickness=0.04e-3, wall_thermal_conductivity=400, geometry="wall",
+            coolant="VLT", coolant_velocity=2, neglect_peak_velocity=False):
         self.cooling_power = cooling_power
         self.airflow = airflow
 
-        self.bulk_area = bulk_area
+        self.bulk_area_ratio = bulk_area_ratio
         self.inlet_area = inlet_area
+        self.bulk_area = self.inlet_area * bulk_area_ratio
         self.tube_diameter = tube_diameter
         self.pitch_diameter_ratio = pitch_diameter_ratio
         self.geometry = geometry
@@ -514,7 +517,7 @@ class HeatExchangerAdvanced(Component):
         self.wall_thermal_conductivity = wall_thermal_conductivity
 
         self.coolant_velocity = coolant_velocity
-        if glycol:
+        if coolant == "glycol":
             # Coolant in fluid side is ethylene glycol
             # Data from https://wiki.anton-paar.com/en/automotive-antifreeze/
             # and https://www.researchgate.net/publication/230074410_Thermal_Conductivity_Density_Viscosity_and_Prandtl-Numbers_of_Ethylene_Glycol-Water_Mixtures
@@ -526,7 +529,7 @@ class HeatExchangerAdvanced(Component):
             self.coolant_dT = 20
             self.coolant_thermal_conductivity = 0.32
             self.coolant_Pr = 600
-        else:
+        elif coolant == "VLT":
             # Coolant in fluid side is Therminol VLT
             # Data from https://www.therminol.com/sites/therminol/files/documents/TF-21_Therminol_VLT.pdf
             # Properties evaluated at -45C
@@ -536,6 +539,41 @@ class HeatExchangerAdvanced(Component):
             self.coolant_dT = 50
             self.coolant_thermal_conductivity = 0.1169
             self.coolant_Pr = 31.04
+        
+        elif coolant == "supercrit He":
+            # Coolant in fluid side is supercritical helium at 20 bar pressure
+            # Data from NIST databook
+            # With constant delta T of 50C (250K to 330K), evaluate properties at 240K
+            self.coolant_inlet = 200
+            self.coolant_viscosity = 1.7231e-5
+            self.coolant_density = 3.9639
+            self.coolant_dT = 50
+            self.coolant_thermal_conductivity = 0.13517
+            self.coolant_Pr = 0.6623
+        
+        elif coolant == "ammonia":
+            # Coolant in fluid side is liquid ammonia at 20 bar pressure
+            # Data from NIST databook
+            # With constant delta T of 50C (250K to 330K), evaluate properties at 240K
+            self.coolant_inlet = 200
+            self.coolant_viscosity = 0.00025696
+            self.coolant_density = 683.88
+            self.coolant_dT = 50
+            self.coolant_thermal_conductivity = 0.58261
+            self.coolant_Pr = 1.9613
+        
+        elif coolant == "concept":
+            # Coolant in fluid side is liquid ammonia at 20 bar pressure
+            # Data from NIST databook
+            # With constant delta T of 50C (250K to 330K), evaluate properties at 240K
+            self.coolant_inlet = 200
+            self.coolant_viscosity = 1.0e-4
+            self.coolant_density = 667
+            self.coolant_dT = 50
+            self.coolant_thermal_conductivity = 0.1
+            self.coolant_Pr = 1.5
+        
+        self.neglect_peak_velocity = neglect_peak_velocity
         
         self.make_geometry()
     
@@ -552,8 +590,8 @@ class HeatExchangerAdvanced(Component):
         self.nozzle_length = (self.diffusion_ratio - 1) / (4 * np.sin(np.deg2rad(nozzle_angle))) * self.inlet_size
 
         # Geometry of actual HX duct
-        heat_transfer_per_unit_area = self.heat_transfer_row()
-        self.required_area = self.cooling_power / heat_transfer_per_unit_area
+        self.heat_transfer_per_unit_area = self.heat_transfer_row()
+        self.required_area = self.cooling_power / self.heat_transfer_per_unit_area
 
         
         self.n_tubes_wide = np.floor(self.duct_size / (self.pitch_diameter_ratio * self.tube_diameter)) - 1
@@ -621,7 +659,11 @@ class HeatExchangerAdvanced(Component):
         
         # Gas thermal resistance
         bulk_velocity = self.airflow.mass_flow / (self.bulk_area * self.airflow.density())
-        peak_velocity = bulk_velocity * self.pitch_diameter_ratio / (self.pitch_diameter_ratio - 1)
+        if self.neglect_peak_velocity:
+            peak_velocity = bulk_velocity
+        else:
+            peak_velocity = bulk_velocity * self.pitch_diameter_ratio / (self.pitch_diameter_ratio - 1)
+
         rho_tubes = self.airflow.density_static(peak_velocity)
         if self.geometry == "row" or self.geometry == "staggered":
             # Implements https://thermopedia.com/cn/content/1212/
@@ -680,20 +722,22 @@ class HeatExchangerAdvanced(Component):
             else:
                 # Chilton-Colburn analogy
                 Nu_gas = 0.125 * f * Re_tubes * np.power(self.airflow.Pr, 1/3)
-            
-            
+
             heat_transfer_coefficient_gas = Nu_gas * self.airflow.k / D_hydraulic
             gas_thermal_resistance = 1 / (heat_transfer_coefficient_gas * np.pi * self.tube_diameter)
 
         thermal_resistance = coolant_thermal_resistance + wall_thermal_resistance + gas_thermal_resistance
 
-        heat_flow_per_unit_area = thermal_resistance * self.coolant_dT
+        heat_flow_per_unit_area = self.coolant_dT / thermal_resistance
 
         return(heat_flow_per_unit_area)
 
     def gas_pressure_drop(self):
         bulk_velocity = self.airflow.mass_flow / (self.bulk_area * self.airflow.density())   
-        peak_velocity = bulk_velocity * self.pitch_diameter_ratio / (self.pitch_diameter_ratio - 1)
+        if self.neglect_peak_velocity:
+            peak_velocity = bulk_velocity
+        else:
+            peak_velocity = bulk_velocity * self.pitch_diameter_ratio / (self.pitch_diameter_ratio - 1)
 
         rho_tubes = self.airflow.density_static(peak_velocity)
 
@@ -901,6 +945,9 @@ class HeatExchangerAdvanced(Component):
             f = 1 / np.power(a, 2)
         else:
             print(Re_tubes, bulk_velocity, self.bulk_area)
+            rough = 0.3 * self.tube_diameter / D_hydraulic
+            a = -1.8 * np.log(6.9/Re_tubes + np.power(rough / 3.7, 1.11))
+            f = 1 / np.power(a, 2)
         
         return(f)
 
@@ -911,12 +958,16 @@ class HeatExchangerAdvanced(Component):
 
     def __repr__(self):
         out_str = ""
+        relative_pd = 100 * self.pressure_drop / self.airflow.pressure
         if self.geometry == "wall":
-            out_str += " \t A sintered tube-wall heat exchanger, with entry pressure of {:.0f}Pa".format(self.airflow.pressure)
+            out_str += " \t A sintered tube-wall heat exchanger, with entry pressure of {:.0f}Pa and a drop of {:.1f}%".format(
+                self.airflow.pressure, relative_pd)
         elif self.geometry == "staggered":
-            out_str += " \t A staggered tube heat exchanger, with entry pressure of {:.0f}Pa".format(self.airflow.pressure)
+            out_str += " \t A staggered tube heat exchanger, with entry pressure of {:.0f}Pa and a drop of {:.1f}%".format(
+                self.airflow.pressure, relative_pd)
         elif self.geometry == "row":
-            out_str += " \t A tube array heat exchanger, with entry pressure of {:.0f}Pa".format(self.airflow.pressure)
+            out_str += " \t A tube array heat exchanger, with entry pressure of {:.0f}Pa and a drop of {:.1f}%".format(
+                self.airflow.pressure, relative_pd)
         out_str += "\n"
         out_str += "Cooling power: {:.0f}W with temperature drop of {:.1f}K ".format(
             self.cooling_power, self.cooling_power / (self.airflow.mass_flow * self.airflow.cp))
