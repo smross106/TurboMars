@@ -154,15 +154,27 @@ def make_heat_exchanger_anypd(input_args, *args, output=False):
 
     coolant_velocity = abs(coolant_velocity)
 
-    if coolant_velocity > 1:
-        coolant_velocity = 1
+    limit_weight = 0
+    if bulk_area_ratio < 1:
+        limit_weight += np.power(bulk_area_ratio-1, 2)*1e50
+    elif bulk_area_ratio > 15:
+        limit_weight += np.power(bulk_area_ratio-50, 2)*1e50
     
-    if bulk_area_ratio > 15:
-        bulk_area_ratio = 15
-
+    if coolant_velocity < 0.1:
+        limit_weight += np.power(coolant_velocity-0.1, 2)*1e50
+    elif coolant_velocity > 1:
+        limit_weight += np.power(coolant_velocity-1, 2)*1e50
+    
+    if gap_diameter_ratio < 0.1:
+        limit_weight += np.power(gap_diameter_ratio-0.1, 2)*1e50
+    elif gap_diameter_ratio >50:
+        limit_weight += np.power(gap_diameter_ratio-50, 2)*1e50
+    
+    if limit_weight != 0:
+        return(limit_weight)
 
     HX = component.HeatExchangerAdvanced(cooling_power, gasflow, inlet_area, 
-        bulk_area_ratio, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="supercrit He")
+        bulk_area_ratio, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="ammonia")
 
     HX.gas_pressure_drop()
     HX.coolant_pumping_power()
@@ -179,30 +191,15 @@ def make_heat_exchanger_anypd(input_args, *args, output=False):
     constraint_weight = 0
 
     constraint_weight += relative_pd * 80 * 5
-
-    if gap_diameter_ratio < 0.1:
-        constraint_weight += np.power(gap_diameter_ratio - 0.1, 4) * 1e30
-    elif gap_diameter_ratio > 50:
-        constraint_weight += abs(gap_diameter_ratio - 50) **2 * 1e6
     
     if ((gap_diameter_ratio+1) * HX.tube_diameter) > HX.duct_size:
         constraint_weight += 1e30
     
-    if bulk_area_ratio < 1:
-        constraint_weight += 1e30
-    elif bulk_area_ratio > 15:
-        constraint_weight += (bulk_area_ratio) * 1e6
+    if (HX.duct_length + HX.diffuser_length + HX.nozzle_length) > 10:
+        constraint_weight += np.power((HX.duct_length + HX.diffuser_length + HX.nozzle_length - 10), 2) * 1e10
     
-    if coolant_velocity < 0.1:
-        constraint_weight += 1e20
-    elif coolant_velocity > 2:
-        constraint_weight += (coolant_velocity - 2) * 1e10
-    
-    if (HX.duct_length + HX.diffuser_length + HX.nozzle_length) > 3:
-        constraint_weight += np.power((HX.duct_length + HX.diffuser_length + HX.nozzle_length - 3), 2) * 1e10
-    
-    #if relative_pd > 20:
-    #    constraint_weight += 1e30
+    if relative_pd > 20:
+        constraint_weight += np.power(relative_pd-20, 2) * 1e20
     """if relative_pd <= 0:
         constraint_weight += 1e30
     elif relative_pd > 10:
@@ -237,7 +234,7 @@ def make_heat_exchanger_pd(input_args, *args, output=False):
         return(limit_weight)
 
     HX = component.HeatExchangerAdvanced(cooling_power, gasflow, inlet_area, 
-        bulk_area_ratio, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="supercrit He")
+        bulk_area_ratio, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="ammonia")
 
     HX.gas_pressure_drop()
     HX.coolant_pumping_power()
@@ -249,12 +246,14 @@ def make_heat_exchanger_pd(input_args, *args, output=False):
 
     ESM_power_weight = HX.pumping_power * .149
 
-    ESM_volume_weight = 0*(HX.duct_length + 2*HX.diffuser_length) * bulk_area_ratio * inlet_area * 100
+    ESM_volume_weight = (HX.duct_length + 2*HX.diffuser_length) * bulk_area_ratio * inlet_area * 100
 
     constraint_weight = 0
 
-    constraint_weight += np.power(target_PD - HX.pressure_drop, 2) * 1e20
+    if HX.pressure_drop > target_PD:
+        constraint_weight += np.power(target_PD - HX.pressure_drop, 4) * 1e50
 
+    constraint_weight += 100*(HX.pressure_drop/gasflow.pressure) * 80 
     
     # if ((gap_diameter_ratio+1) * HX.tube_diameter) > HX.duct_size:
     #     constraint_weight += 1e30
@@ -359,9 +358,9 @@ def optimise_radial(flow_in, pressure_ratio_stage, efficiency_guess):
 
 def optimise_hx_anypd(flow_in, cooling_deltah, inlet_area):
     
-    bulk_area_ratio_guess = 5 
-    coolant_velocity_guess = 0.5
-    gap_diameter_ratio_guess = 5
+    bulk_area_ratio_guess = 2 
+    coolant_velocity_guess = 0.2
+    gap_diameter_ratio_guess = 2
 
     cooling_power = flow_in.mass_flow * cooling_deltah
 
@@ -397,7 +396,7 @@ def optimise_hx_anypd(flow_in, cooling_deltah, inlet_area):
     (bulk_area, coolant_velocity, gap_diameter_ratio) = properties.x
 
     HX = component.HeatExchangerAdvanced(cooling_power, flow_in, inlet_area, 
-        bulk_area, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity)
+        bulk_area, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="ammonia")
     HX.gas_pressure_drop()
     HX.coolant_pumping_power()
     HX.weight_estimate()
@@ -408,20 +407,20 @@ def optimise_hx_anypd(flow_in, cooling_deltah, inlet_area):
 def optimise_hx_pd(flow_in, cooling_deltah, inlet_area, target_PD):
     
     bulk_area_guess = 2
-    coolant_velocity_guess = 1
-    gap_diameter_ratio_guess = 5
+    coolant_velocity_guess = 0.2
+    gap_diameter_ratio_guess = 2
 
     cooling_power = flow_in.mass_flow * cooling_deltah
 
 
     x0 = np.array([bulk_area_guess, coolant_velocity_guess, gap_diameter_ratio_guess])
-    x0_upper = np.array([15, 1, 50])
+    x0_upper = np.array([15, 1, 100])
     N = len(x0)
     zdelt = 0.00025
     sim = np.empty((N + 1, N), dtype=x0.dtype)
     sim[0] = x0
     for k in range(N):
-        y = 0.8*np.array(x0, copy=True)
+        y = np.array(x0, copy=True)
         if y[k] != 0:
             y[k] = x0_upper[k]
         else:
@@ -444,7 +443,7 @@ def optimise_hx_pd(flow_in, cooling_deltah, inlet_area, target_PD):
     (bulk_area, coolant_velocity, gap_diameter_ratio) = properties.x
 
     HX = component.HeatExchangerAdvanced(cooling_power, flow_in, inlet_area, 
-        bulk_area, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="supercrit He")
+        bulk_area, pitch_diameter_ratio=gap_diameter_ratio+1, coolant_velocity=coolant_velocity, coolant="ammonia")
     HX.gas_pressure_drop()
     HX.coolant_pumping_power()
     HX.weight_estimate()

@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import optimize
 
-
+#region
 class GasFlow(object):
     def __init__(self, mass_flow, temperature, pressure, carbon_dioxide=True):
         self.mass_flow = mass_flow
@@ -61,11 +61,13 @@ class GasFlow(object):
     def delta_h_delta_T(self, delta_T):
         delta_h = delta_T * self.cp
         return(delta_h)
+#endregion
 
 class Component(object):
     def __init__(self):
         pass
 
+#region
 class AxialStage(Component):
     def __init__(self, gasflow_in, pressure_ratio_stage, speed, work_coeff, flow_coeff, efficiency_guess):
         self.gasflow_in = gasflow_in
@@ -207,7 +209,9 @@ class AxialStage(Component):
         out_str += "\n"
         out_str += "Estimated efficiency of {:.1f}%".format(self.estimate_efficiency()*100)
         return(out_str)
+#endregion
 
+#region
 class RadialStage(Component):
     def __init__(self, gasflow_in, pressure_ratio_stage, speed, work_coeff, flow_coeff, efficiency_guess, radius_hub_inlet, diffusion_ratio=3):
         self.gasflow_in = gasflow_in
@@ -293,9 +297,10 @@ class RadialStage(Component):
         L_W_diffuser = 0.6643 * np.power(self.diffusion_ratio, 2.7023) 
     
         # Using properties for a logarithmic spiral
+        e_b_theta = self.R_stator_exit / self.R_stator_in
         b = np.cos(stator_flow_angle_rad) / np.sin(stator_flow_angle_rad)
         a = self.R_stator_in
-        L_diffuser = a * np.sqrt(1 + np.power(b,2)) / b
+        L_diffuser = e_b_theta * a * np.sqrt(1 + np.power(b,2)) / b
         self.diffuser_blade_length = L_diffuser
         W_diffuser = L_diffuser / L_W_diffuser
         self.N_blades_stator = np.round((2 * np.pi * self.R_stator_in) / W_diffuser)
@@ -312,7 +317,7 @@ class RadialStage(Component):
         # Find minimum thickness to support a hoop stress based on pressure and the 
         # arithmetic mean of inlet and outlet tip radii
 
-        thickness_minimum = self.gasflow_in.pressure * (self.R_hub_inlet + self.R_tip_inlet) / (2*yield_stress)
+        thickness_minimum = self.gasflow_in.pressure * self.R_mean_imp_exit / (2*yield_stress)
 
         # Casing thickness is same but with safety factor 2, 5mm maximum thickness
         casing_thickness = max(5e-3, thickness_minimum*2)
@@ -328,11 +333,15 @@ class RadialStage(Component):
         revolved_hub_centroid /= hub_section_area
 
         hub_volume = (2 * np.pi * revolved_hub_centroid) * hub_section_area
+
+        # Hub base volume
+        hub_volume += 5e-3 * np.pi * np.power(self.R_mean_imp_exit, 2)
+
         hub_weight = hub_volume*density
 
         # Add factor for diffuser plane
         # Assume radius increases by 2
-        diffuser_plate_area = (np.power(self.R_stator_exit,2) - np.power(self.R_stator_in, 2)) * np.pi
+        diffuser_plate_area = (np.power(self.R_stator_exit,2) - np.power(self.R_mean_imp_exit, 2)) * np.pi
         diffuser_blade_area = self.N_blades_stator * self.diffuser_blade_length * self.bladeheight_imp_exit
 
         diffuser_weight = (diffuser_plate_area * 2 * casing_thickness) + (1e-3 * diffuser_blade_area)
@@ -371,7 +380,7 @@ class RadialStage(Component):
         return(efficiency)
     
     def efficiency_smyth(self, verbose):
-        peak_flow_param = 2.5
+        peak_flow_param = 3.6
         peak_work_param = 5.5
 
         # Smyth constraint one - assume A/r_1^2 = 5 for radials
@@ -462,8 +471,9 @@ class RadialStage(Component):
         out_str += "\n"
         out_str += "Estimated efficiency of {:.1f}%".format(self.estimate_efficiency()*100)
         return(out_str)
-    
+#endregion    
 
+#region
 class HeatExchanger(Component):
     def __init__(self, gasflow_in, delta_h, air_speed, pressure_drop):
         self.gasflow_in = gasflow_in
@@ -498,6 +508,7 @@ class HeatExchanger(Component):
 
         self.weight = hx_weight
         return(hx_weight)
+#endregion
 
 class HeatExchangerAdvanced(Component):
     def __init__(self, cooling_power, airflow, inlet_area, bulk_area_ratio, 
@@ -562,22 +573,11 @@ class HeatExchangerAdvanced(Component):
             # Data from NIST databook
             # With constant delta T of 50C (250K to 330K), evaluate properties at 240K
             self.coolant_inlet = 200
-            self.coolant_viscosity = 0.00025696
+            self.coolant_viscosity = 25.696e-5
             self.coolant_density = 683.88
             self.coolant_dT = 50
             self.coolant_thermal_conductivity = 0.58261
             self.coolant_Pr = 1.9613
-        
-        elif coolant == "concept":
-            # Coolant in fluid side is liquid ammonia at 20 bar pressure
-            # Data from NIST databook
-            # With constant delta T of 50C (250K to 330K), evaluate properties at 240K
-            self.coolant_inlet = 200
-            self.coolant_viscosity = 1.0e-4
-            self.coolant_density = 667
-            self.coolant_dT = 50
-            self.coolant_thermal_conductivity = 0.1
-            self.coolant_Pr = 1.5
         
         self.neglect_peak_velocity = neglect_peak_velocity
         
@@ -611,9 +611,14 @@ class HeatExchangerAdvanced(Component):
         else:
             area_per_row = self.duct_size * np.pi * self.tube_diameter * self.n_tubes_wide
             self.n_rows = np.ceil(self.required_area / area_per_row)
-
             self.n_tubes = self.n_rows * self.n_tubes_wide
-            self.duct_length = self.n_tubes * (self.pitch_diameter_ratio * self.tube_diameter)
+            if self.geometry == "row":
+                self.duct_length = self.n_tubes * (self.pitch_diameter_ratio * self.tube_diameter)
+            elif self.geometry == "staggered":
+                self.duct_length = self.n_tubes * (self.pitch_diameter_ratio * 0.5 * np.sqrt(3) * self.tube_diameter)
+        
+        self.total_length = self.duct_length + self.nozzle_length + self.diffuser_length
+            
     
     def weight_estimate(self):
         # Assume a tube density of 9000
@@ -657,10 +662,10 @@ class HeatExchangerAdvanced(Component):
             Nu_coolant = 0.023 * np.power(Re_coolant, 0.8) * np.power(self.coolant_Pr, 1/3)
         
         heat_transfer_coefficient_coolant = Nu_coolant * self.coolant_thermal_conductivity / D_internal
-        coolant_thermal_resistance = 1 / (heat_transfer_coefficient_coolant * np.pi * D_internal)
+        coolant_thermal_resistance = (np.pi * self.tube_diameter) / (heat_transfer_coefficient_coolant * np.pi * D_internal)
 
         # Wall thermal resistance
-        wall_thermal_resistance = np.log(self.tube_diameter / D_internal) / (2 * np.pi * self.wall_thermal_conductivity)
+        wall_thermal_resistance = np.pi * self.tube_diameter * np.log(self.tube_diameter / D_internal) / (2 * np.pi * self.wall_thermal_conductivity)
 
         
         # Gas thermal resistance
@@ -701,7 +706,7 @@ class HeatExchangerAdvanced(Component):
             
             Nu_gas = c * np.power(Re_tubes, m) * np.power(self.airflow.Pr, 1/3)
             heat_transfer_coefficient_gas = Nu_gas * self.airflow.k / self.tube_diameter
-            gas_thermal_resistance = 1 / (heat_transfer_coefficient_gas * np.pi * self.tube_diameter)
+            gas_thermal_resistance = 1 / heat_transfer_coefficient_gas
         
         elif self.geometry == "wall":
             D_hydraulic = 2 * (self.pitch_diameter_ratio - 1) * self.tube_diameter
@@ -730,7 +735,7 @@ class HeatExchangerAdvanced(Component):
                 Nu_gas = 0.125 * f * Re_tubes * np.power(self.airflow.Pr, 1/3)
 
             heat_transfer_coefficient_gas = Nu_gas * self.airflow.k / D_hydraulic
-            gas_thermal_resistance = 1 / (heat_transfer_coefficient_gas * np.pi * self.tube_diameter)
+            gas_thermal_resistance = 1 / heat_transfer_coefficient_gas
 
         thermal_resistance = coolant_thermal_resistance + wall_thermal_resistance + gas_thermal_resistance
 
@@ -750,7 +755,7 @@ class HeatExchangerAdvanced(Component):
         if self.geometry == "row" or self.geometry == "staggered":
 
             Re_tubes = peak_velocity * rho_tubes * self.tube_diameter / self.airflow.viscosity
-            # Implements equations from https://thermopedia.com/cn/content/1212/
+            # Implements equations from https://thermopedia.com/content/1211/
             
             # Euler number correlations
             c0 = 0
@@ -892,9 +897,11 @@ class HeatExchangerAdvanced(Component):
         # 5% loss in nozzle
 
         inlet_velocity = self.airflow.mass_flow / (self.inlet_area * self.airflow.density())
-        self.pressure_drop_diffuser = (0.5 * self.airflow.density() * np.power(inlet_velocity, 2)) * (0.15 + 0.05)
+        bulk_velocity = self.airflow.mass_flow / (self.bulk_area * self.airflow.density())
+        self.pressure_drop_diffuser = (0.5 * self.airflow.density() * np.power(inlet_velocity, 2)) * 0.15
+        self.pressure_drop_nozzle = (0.5 * self.airflow.density() * np.power(bulk_velocity, 2)) * 0.05
 
-        self.pressure_drop = self.pressure_drop_hx + self.pressure_drop_diffuser
+        self.pressure_drop = self.pressure_drop_hx + self.pressure_drop_diffuser + self.pressure_drop_nozzle
 
 
         # TODO Pressure drop from bends
@@ -905,16 +912,19 @@ class HeatExchangerAdvanced(Component):
         D_internal = self.tube_diameter - (2 * self.wall_thickness)
         Re_coolant = self.coolant_velocity * self.coolant_density * D_internal / self.coolant_viscosity
 
+        f_lam = 64 / Re_coolant
+        roughness = 0.002e-3
+        a = -1.8 * np.log(6.9/Re_coolant + np.power(roughness/D_internal / 3.7, 1.11))
+        f_turb = 1 / np.power(a, 2)
         if Re_coolant < 2300:
             # Coolant flow is laminar
-            f = 64 / Re_coolant
+            f = f_lam
+        elif Re_coolant > 4000:
+            # Coolant flow is definitely turbulent
+            f = f_turb
         else:
-            # Coolant flow is turbulent
-            # Unlikely for glycol
-            # Haaland correlation for f
-            roughness = 0.002e-3
-            a = -1.8 * np.log(6.9/Re_coolant + np.power(roughness/D_internal / 3.7, 1.11))
-            f = 1 / np.power(a, 2)
+            f = max(f_lam, f_turb)
+            
         
         pressure_drop_one_tube = f * (self.duct_size / D_internal) * self.coolant_density * self.coolant_velocity**2 / 2
         pressure_drop_exchanger = pressure_drop_one_tube * self.n_rows
@@ -932,11 +942,11 @@ class HeatExchangerAdvanced(Component):
 
         if Re_tubes < 2100:
             # Laminar flow
-            f = 16 / Re_tubes
+            f = 64 / Re_tubes
         
         elif Re_tubes < 1e4:
             # Transition region: use greater of the two
-            f_lam = 16 / Re_tubes
+            f_lam = 64 / Re_tubes
 
             # Haaland approximation
             rough = 0.15 * self.tube_diameter / D_hydraulic
@@ -981,7 +991,7 @@ class HeatExchangerAdvanced(Component):
         out_str += "Total number of tube passes: {:.0f}".format(self.n_tubes)
         out_str += "\n"
         out_str += "Total installed length of {:.1f}mm, inlet width of {:.1f}mm and duct width of {:.1f}mm".format(
-            (self.duct_length + self.diffuser_length + self.nozzle_length)*1000, self.inlet_size*1000, self.duct_size*1000)
+            (self.total_length)*1000, self.inlet_size*1000, self.duct_size*1000)
         out_str += "\n"
         out_str += "Total installed weight of {:.2f}kg".format(self.weight)
         out_str += "\n"
