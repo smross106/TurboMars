@@ -121,7 +121,7 @@ class AxialStage(Component):
 
     def ESM_estimate(self):
         self.power = self.work_stage * self.gasflow_in.mass_flow / self.efficiency
-        power_weight = self.power * .121
+        power_weight = self.power * .149
 
         self.ESM = self.weight + power_weight
 
@@ -249,6 +249,12 @@ class RadialStage(Component):
         self.bladeheight_in = self.R_tip_inlet - self.R_hub_inlet
 
         self.A_in = 2 * np.pi * self.R_mean_inlet * self.bladeheight_in
+
+        Vtheta_rel_in_mean = (self.R_mean_inlet * self.speed_rad)
+
+        self.W_mean_in = np.sqrt(np.power(self.Vx_in,2) + np.power(Vtheta_rel_in_mean, 2))
+
+        self.Reynolds_in = self.gasflow_in.density() * self.R_mean_inlet * self.W_mean_in / self.gasflow_in.viscosity
     
     def calculate_geometry_rotor_out(self):
         # Using backsweep angle to find blade speed for the desired enthalpy change in the rotor
@@ -361,7 +367,7 @@ class RadialStage(Component):
     
     def ESM_estimate(self):
         self.power = self.work_stage * self.gasflow_in.mass_flow / self.efficiency
-        power_weight = self.power * .121
+        power_weight = self.power * .149
 
         self.ESM = self.weight + power_weight
 
@@ -425,6 +431,10 @@ class RadialStage(Component):
         
         impeller_efficiency_estimate = self.efficiency_smyth(verbose)
 
+        impeller_efficiency_estimate = self.efficiency_delta_reynolds(impeller_efficiency_estimate)
+        impeller_efficiency_estimate = self.efficiency_delta_tip_gap(impeller_efficiency_estimate)
+        #impeller_efficiency_estimate = self.efficiency_delta_mach(impeller_efficiency_estimate)
+
         if impeller_efficiency_estimate<0.01:
             impeller_efficiency_estimate = 0.01
         if self.work_coeff <= 0:
@@ -440,6 +450,60 @@ class RadialStage(Component):
         self.efficiency_stator = stator_efficiency
         
         return(self.efficiency)
+    
+    def efficiency_delta_reynolds(self, efficiency_rotor):
+        phi_t1 = self.gasflow_in.mass_flow / (
+            4 * self.gasflow_in.density() * np.power(self.R_mean_imp_exit, 3) * self.speed_rad)
+        
+        beta_ref = 0.05 + (0.002 / (phi_t1 + 0.0025))
+
+        reynolds_ratio = (1.5e5 - self.Reynolds_in) / 1.5e5
+
+        efficiency_delta_coefficient = -beta_ref * reynolds_ratio
+
+        efficiency_flow_coefficient = efficiency_rotor + efficiency_delta_coefficient
+
+
+        efficiency_power_law = 1 - (1 - efficiency_rotor) * np.power(1.5e5/self.Reynolds_in, 0.2)
+
+        adjusted_efficiency_rotor = min(efficiency_flow_coefficient, efficiency_power_law)
+
+        return(adjusted_efficiency_rotor)
+    
+    def efficiency_delta_tip_gap(self, efficiency_rotor):
+        tip_gap = 0.5e-3
+
+        relative_tip_gap = tip_gap / self.bladeheight_imp_exit
+
+        adjusted_efficency_rotor = relative_tip_gap * (-0.3) + efficiency_rotor
+
+        return(adjusted_efficency_rotor)
+    
+    def efficiency_delta_mach(self, efficiency_rotor):
+        efficiency_rotor_poly = np.log(self.pressure_ratio_stage) / np.log(
+            ((np.power(self.pressure_ratio_stage, self.gasflow_in.gm1/self.gasflow_in.gamma) - 1) / efficiency_rotor)+1)
+        efficiency_rotor_poly *= self.gasflow_in.gm1/self.gasflow_in.gamma
+
+        T_2rel = self.gasflow_in.temperature - (np.power(self.W_mean_in, 2) / (2 * self.gasflow_in.cp)) + (
+            self.work_stage / self.gasflow_in.cp
+        )
+
+        mach_2theta = self.V_theta_imp_exit / np.sqrt(T_2rel * self.gasflow_in.gamma * self.gasflow_in.Rgas)
+
+        if mach_2theta < 0.8:
+            return(efficiency_rotor)
+        
+        else:
+            phi_t1 = self.gasflow_in.mass_flow / (
+            4 * self.gasflow_in.density() * np.power(self.R_mean_imp_exit, 3) * self.speed_rad)
+            X = phi_t1 * (mach_2theta - 0.8)
+            delta_efficiency_poly = 0.05 * np.power(X, 2) + 3 * np.power(X, 4)
+
+            adjusted_efficiency_poly = efficiency_rotor_poly - delta_efficiency_poly
+            adjusted_efficiency = ((np.power(self.pressure_ratio_stage, self.gasflow_in.gm1/self.gasflow_in.gamma) - 1)/
+            (np.power(self.pressure_ratio_stage, self.gasflow_in.gm1/(self.gasflow_in.gamma*adjusted_efficiency_poly)) - 1))
+
+            return(adjusted_efficiency)
 
     def gasflow_out(self):
         delta_T = self.work_stage / self.gasflow_in.cp
@@ -510,6 +574,7 @@ class HeatExchanger(Component):
         return(hx_weight)
 #endregion
 
+#region
 class HeatExchangerAdvanced(Component):
     def __init__(self, cooling_power, airflow, inlet_area, bulk_area_ratio, 
             tube_diameter=2e-3, pitch_diameter_ratio=1.25, 
@@ -968,9 +1033,10 @@ class HeatExchangerAdvanced(Component):
         return(f)
 
     def estimate_ESM(self):
-        self.power_weight = self.pumping_power * .121
+        self.power_weight = self.pumping_power * .149
+        self.cooling_weight = self.cooling_power * .121
 
-        self.ESM = self.weight + self.power_weight
+        self.ESM = self.weight + self.power_weight + self.cooling_weight
 
     def __repr__(self):
         out_str = ""
@@ -1000,7 +1066,7 @@ class HeatExchangerAdvanced(Component):
         out_str += "Equivalent system mass of {:.1f}kg-eq".format(self.ESM)
 
         return(out_str)
-        
+#endregion    
 
 """bc_flow = GasFlow(0.05, 230, 1900)
 

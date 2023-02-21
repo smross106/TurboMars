@@ -115,7 +115,7 @@ def make_radial(input_args, *args, output=False):
         constraint_weight += abs(radial.bladeheight_imp_exit - 3e-3)**2 * 5e8
     
     if radial.R_mean_imp_exit < radial.R_tip_inlet:
-        constraint_weight += 1e15
+        constraint_weight += np.power(radial.R_tip_inlet / radial.R_mean_imp_exit, 2) * 1e40
 
     if work_coeff < 0.01:
         constraint_weight += 1e15
@@ -142,6 +142,11 @@ def make_radial(input_args, *args, output=False):
         constraint_weight += abs(radius_hub_inlet - 10e-3)**2 * 1e7
     elif radius_hub_inlet > 1:
         constraint_weight += abs(radius_hub_inlet - 1)**2 * 1e5
+
+    if np.isnan([radial_weight]):
+        radial_weight = 1e50
+    if np.isnan([ESM_power_weight]):
+        ESM_power_weight = 1e50
 
     if output:
         return(radial_weight+ESM_power_weight)
