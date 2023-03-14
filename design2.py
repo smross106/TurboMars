@@ -7,165 +7,528 @@ import warnings
 warnings.filterwarnings('ignore')
 import time
 import design
+from math import log
+import copy
 
-T_in = 222.88
-p_in = 1594.4
+def run_machine(machines, T_start, p_start, mass_flow, label="", verbose=True):
+    running_machines = copy.deepcopy(machines)
+    T_in = T_start
+    p_in = p_start
 
+    compressor_type_numbers = [1, 1, 1]
 
-HX_weight = []
-HX_length = []
-HX_duct_length = []
-HX_ESM = []
+    machine_label = ["In"]
+    compressor_label = []
+    HX_label = []
 
-HX_PR_limit = 0.2
-HX_PR_increase_ratio = 1.2
-HX_PR_start = 0.01
-HX_PR_increases_limit = 18
-
-total_compression_work = 0
-total_compressor_weight= 0
-compressor_efficiency = []
-
-total_ESM = 0
-
-mass_flow = 0.1
-HX_max_volume = max(2, 2*(mass_flow/0.05)**3)
-
-N_stages = 25
-rad_PR = 1.35
-
-start = time.time()
-
-for i in range(N_stages):
-    flow_cold = component.GasFlow(mass_flow, T_in, p_in)
+    machines_power = []
+    machines_cooling = []
+    pressures = [p_start]
+    temperatures = [T_start]
+    machines_efficiency = []
 
     
-    # ax1 = design.optimise_axial(flow, flow.delta_h_PR(1.1), 0.85)
+    for machine in running_machines:
+        flow = component.GasFlow(mass_flow, T_in, p_in)
 
-    rad1 = design.optimise_radial(flow_cold, rad_PR, 0.85)
+        machine.gasflow_in = flow
+        
+        if type(machine) == component.AxialStage or type(machine) == component.RadialStage or type(machine) == component.ScrollCompressor:
+            machine.estimate_efficiency()
+            machine.estimate_ESM()
 
-    print("Radial",str(i+1))
-    #print(rad1)
-    #print(rad1.efficiency_delta_mach(0.85), rad1.W_mean_in, rad1.V_theta_imp_exit )
-    #print(2000*rad1.R_mean_inlet, 2000*rad1.R_mean_imp_exit, 2000*rad1.R_stator_exit, 1000*rad1.bladeheight_imp_exit, rad1.speed, rad1.efficiency, rad1.weight, rad1.power)
+            machines_power.append(machine.power)
+            machines_efficiency.append(machine.efficiency)
 
-    hot_T = flow_cold.temperature * ((np.power(rad_PR, flow_cold.gm1/flow_cold.gamma) - 1)/rad1.efficiency + 1)
+            if type(machine) == component.AxialStage:
+                machine_label.append(str("A"+str(compressor_type_numbers[0])))
+                compressor_label.append(str("A"+str(compressor_type_numbers[0])))
+                compressor_type_numbers[0] += 1
+            elif type(machine) == component.RadialStage:
+                machine_label.append(str("R"+str(compressor_type_numbers[1])))
+                compressor_label.append(str("R"+str(compressor_type_numbers[1])))
+                compressor_type_numbers[1] += 1
+            elif type(machine) == component.ScrollCompressor:
+                machine_label.append(str("S"+str(compressor_type_numbers[2])))
+                compressor_label.append(str("S"+str(compressor_type_numbers[2])))
+                compressor_type_numbers[2] += 1
+            
+            p_in = p_in * machine.pressure_ratio_stage
+            T_in = flow.temperature * ((np.power(machine.pressure_ratio_stage, flow.gm1/flow.gamma) - 1)/machine.efficiency + 1)
+        
+        elif type(machine) == component.HeatExchangerAdvanced:
+            machine.gas_pressure_drop()
+
+            # Assume heat transfer scaled with LMTD
+            machine_max_cooling_duty = (machine.coolant_max_T_out - machine.coolant_T_in) / machine.design_delta_T
+            machine.cooling *= min(((T_in - machine.design_T_in) + machine.coolant_dT) / machine.coolant_dT, machine_max_cooling_duty)
+
+            #print(min(((T_in - machine.design_T_in) + machine.coolant_dT) / machine.coolant_dT, machine_max_cooling_duty), ((T_in - machine.design_T_in) + machine.coolant_dT) / machine.coolant_dT, machine_max_cooling_duty)
+
+            machines_power.append(machine.power)
+            machines_cooling.append(machine.cooling)
+
+            machine_label.append(str("H"+str(len(HX_label)+1)))
+            HX_label.append(str("H"+str(len(HX_label)+1)))
+
+            T_in = T_in - flow.delta_T_delta_h(machine.cooling/mass_flow)
+            p_in -= machine.pressure_drop
+        
+        elif type(machine) == component.CondensingHX:
+            machine.estimate_pressure_drop(p_in)
+
+            machines_power.append(machine.power)
+            machines_cooling.append(machine.cooling)
+
+            machine_label.append(str("COND1"))
+            HX_label.append(str("COND1"))
+
+            T_in = T_in
+            p_in -= machine.pressure_drop
+        
+        elif type(machine) == component.BufferTank:
+            machines_power.append(machine.power)
+
+            machine_label.append(str("T1"))
+
+        
+        pressures.append(p_in)
+        temperatures.append(T_in)
+    
+    print(temperatures)
+    #print(T_start, "\n", sum(machines_power), "\n", sum(machines_cooling), "\n")
+    plt.plot(machine_label, temperatures, label=label)
+    return(sum(machines_power), sum(machines_cooling))
 
 
-    flow_hot = component.GasFlow(mass_flow, hot_T, flow_cold.pressure*rad_PR)
-    Q = flow_hot.delta_h_delta_T(abs(250-flow_hot.temperature)) 
-
-    total_compression_work += Q * flow_hot.mass_flow
-    total_compressor_weight += rad1.weight
-    compressor_efficiency.append(rad1.efficiency)
-    total_ESM += rad1.ESM
-
-    A_HX_in = flow_hot.mass_flow / (flow_hot.density() * 10)
-
+def generate_heat_exchanger(flow_hot, Q, A_HX_in, maximum_HX_PR, ESM_vector, coolant="ammonia"):
+    HX_PR_limit = maximum_HX_PR
+    HX_PR_increase_ratio = 1.2
+    HX_PR_start = 0.005
+    HX_PR_increases_limit = int(np.log(HX_PR_limit/HX_PR_start)/np.log(HX_PR_increase_ratio))
 
     HX_PR_target = HX_PR_start
     HX_PR_increases = 0
     hx1_PR_actual = 1
     HX_approved = False
 
-    while ((hx1_PR_actual > HX_PR_target) or (not HX_approved)) and (HX_PR_increases < HX_PR_increases_limit):
-        if i < 3 or rad1.A_stator_exit < 6.25e-4:
-            hx1 = design.optimise_hx_pd(flow_hot, Q, A_HX_in, HX_PR_target)
-        else:
-            hx1 = design.optimise_hx_pd(flow_hot, Q, rad1.A_stator_exit, HX_PR_target)
+    while (not HX_approved) and (HX_PR_increases < HX_PR_increases_limit):
+        hx1 = design.optimise_hx_pd(flow_hot, Q, A_HX_in, HX_PR_target, ESM_vector, coolant=coolant)
         hx1_PR_actual = hx1.pressure_drop / flow_hot.pressure
 
         HX_volume = hx1.total_length * (hx1.duct_size**2)
-        if HX_volume < HX_max_volume:
+        if hx1_PR_actual < HX_PR_target:
             HX_approved = True
 
         HX_PR_target *= HX_PR_increase_ratio
         HX_PR_increases += 1
-        print("HX number ", str(i+1),", iteration ",str(HX_PR_increases))
 
-    #print(hx1)
-    #print(hx1.coolant_velocity)
-    HX_ESM.append(hx1.weight)
+    if np.isnan(hx1.pressure_drop) or hx1_PR_actual > maximum_HX_PR:
+        print("### \t ERROR \t ###")
+        print(hx1)
+        print(hx1.bulk_area_ratio, hx1.coolant_velocity, hx1.pitch_diameter_ratio)
+    else:
+        return(hx1)
 
-    total_ESM += hx1.ESM
+def ESM(weight, power, cooling, ESM_vector, verbose=True):
+    ESM = (weight*ESM_vector[0]) + (power*ESM_vector[1]) + (cooling*ESM_vector[2])
 
-    HX_PR = hx1.pressure_drop / flow_hot.pressure
-
-    print("HX",str(i+1), HX_PR)
+    return(ESM)
 
 
-    if HX_PR > 0.99:
-        HX_PR = 0.99
+def design_machine(mass_flow, T_in, p_in, ESM_vector, num_intercoolers, rad_PR, p_out_target=555.6e3, condense=True, verbose=True):
 
-    """for PR in HX_PR_range:
-        hx1 = design.optimise_hx_pd(flow_hot, flow_hot.delta_h_delta_T(abs(250-flow_hot.temperature)), rad1.A_stator_exit, PR)
-        real_HX_PR = hx1.pressure_drop / flow_hot.pressure
-        if hx1.ESM < best_HX_ESM:
-            best_HX_ESM = hx1.ESM + (real_HX_PR * 160000 * flow_hot.mass_flow)
-            best_hx = hx1
-            HX_PR = PR
+    #ESM_vector = [1, 0.149, 0.121, 100]
+
+    #T_in = 190
+    #p_in = 781
+    #p_out_target = 555.6e3
+
+    total_compression_work = 0
+    total_compressor_weight= 0
+    total_cooling = 0
+    compressor_efficiency = []
+    machines_before_scroll = []
+
+    #mass_flow = 0.0113
+
+    N_stages = num_intercoolers
+
+    #rad_PR = 1.222       # For 30 stages
+    #rad_PR = 1.272      # for 25 stages
+    #rad_PR = 1.3516       # for 20 stages
+    #rad_PR = 1.5066       # For 15 stages
+    #rad_PR = 1.8304       # For 10 stages
+
+    after_scroll = False
+    weight_after_scroll = 0
+    power_after_scroll = 0
+    cooling_after_scroll = 0
+    machines_after_scroll = []
+    p_inlet_scroll = 0
+    T_inlet_scroll = 0
+
+    start = time.time()
+
+    scroll_compressor = []
+
+    if verbose:print("\t Designing initial axials")
+    for i in range(6):
+        flow_cold = component.GasFlow(mass_flow, T_in, p_in)
+        ax1 = design.optimise_axial(flow_cold, 1.1, 0.85, ESM_vector)
+        #print("Axial", str(i+1), ax1.efficiency, ax1.weight)
+        compressor_efficiency.append(ax1.efficiency)
+        total_compressor_weight += ax1.weight
+        total_compression_work += ax1.power
+
+        hot_T = flow_cold.temperature * ((np.power(1.1, flow_cold.gm1/flow_cold.gamma) - 1)/ax1.efficiency + 1)
+
+        T_in = hot_T
+        p_in *= 1.1
+
+        machines_before_scroll.append(ax1)
+
+    if verbose:print("\t Designing intercooled radials")
+    for i in range(N_stages):
+        flow_cold = component.GasFlow(mass_flow, T_in, p_in)
+
+        # ax1 = design.optimise_axial(flow, flow.delta_h_PR(1.1), 0.85)
+
+        rad1 = design.optimise_radial(flow_cold, rad_PR, 0.7, ESM_vector)
+
+        equivalent_scroll = component.ScrollCompressor(flow_cold, rad_PR)
+        equivalent_scroll.estimate_ESM()
+
+        equivalent_scroll_ESM_scale = equivalent_scroll.weight*ESM_vector[0] + equivalent_scroll.power*(ESM_vector[1]+ESM_vector[2])
+        rad1_ESM_scale = rad1.weight*ESM_vector[0] + rad1.power*(ESM_vector[1]+ESM_vector[2])
+
+        if equivalent_scroll_ESM_scale < rad1_ESM_scale:
+            rad1 = equivalent_scroll
+            use_scroll = True
+            if after_scroll == False:
+                after_scroll = True
+                p_inlet_scroll = p_in
+                T_inlet_scroll = T_in
+        else:
+            use_scroll = False
+
+        compressor_efficiency.append(rad1.efficiency)
+        scroll_compressor.append(use_scroll)
+
+        #if use_scroll:
+        #    print("Scroll",str(i+1), rad1.efficiency, rad1.weight)
+        #else:
+        #    print("Radial",str(i+1), rad1.efficiency, rad1.weight)
+
+        hot_T = flow_cold.temperature * ((np.power(rad_PR, flow_cold.gm1/flow_cold.gamma) - 1)/rad1.efficiency + 1)
+
+        
+        flow_hot = component.GasFlow(mass_flow, hot_T, flow_cold.pressure*rad_PR)
+        Q = flow_hot.delta_h_delta_T(abs(250-flow_hot.temperature)) 
+
+        total_compression_work += rad1.power
+        total_compressor_weight += rad1.weight
+
+        if after_scroll:
+            power_after_scroll += rad1.power
+            weight_after_scroll += rad1.weight
+            machines_after_scroll.append(rad1)
+        else:
+            machines_before_scroll.append(rad1)
+
+
+        A_HX_in = flow_hot.mass_flow / (flow_hot.density() * 10)
+
+        hx1 = generate_heat_exchanger(flow_hot, Q, A_HX_in, 1-(1/rad_PR), ESM_vector)
+
+        total_cooling += hx1.cooling
+        total_compression_work += hx1.power
+        total_compressor_weight += hx1.weight
+
+        if after_scroll:
+            power_after_scroll += hx1.power
+            weight_after_scroll += hx1.weight
+            cooling_after_scroll += hx1.cooling
+            machines_after_scroll.append(hx1)
+        else:
+            machines_before_scroll.append(hx1)
+
+
+        HX_PR = hx1.pressure_drop / flow_hot.pressure
+        
+        #print("HX",str(i+1), HX_PR, hx1.weight)
+        
+        T_in = 250
+        p_in = flow_hot.pressure * (1 - HX_PR)
+
+    p_out_initial = p_in
+    T_out_initial = T_in
+
+    best_scroll_machines = machines_after_scroll
+
+    if sum(scroll_compressor) > 1:
+        if verbose:print("\t Multiple scrolls detected - running scroll number optimisation pass")
+        nominal_scroll_compressors = sum(scroll_compressor)
+        total_scroll_compression = np.power(rad_PR, nominal_scroll_compressors)
+
+        best_scroll_N = nominal_scroll_compressors
+        best_scroll_weight = weight_after_scroll
+        best_scroll_power = power_after_scroll
+        best_scroll_cooling = cooling_after_scroll
+        best_scroll_ESM = ESM(best_scroll_weight, best_scroll_power, best_scroll_cooling, ESM_vector)
+        best_scroll_machines = machines_after_scroll
+        p_out_best = p_out_initial
+        T_out_best = T_out_initial
+
+        for test_num_scroll_compressors in reversed(range(1,nominal_scroll_compressors, 1)):
+            scroll_PR = np.power(total_scroll_compression, 1/test_num_scroll_compressors)
+
+            for i in range(3):
+                T_in = T_inlet_scroll
+                p_in = p_inlet_scroll
+                test_scroll_weight = 0
+                test_scroll_power = 0
+                test_scroll_cooling = 0
+                test_scroll_machines = []
+
+                for stage in range(test_num_scroll_compressors):
+                    flow_cold = component.GasFlow(mass_flow, T_in, p_in)
+                    
+                    scr1 = component.ScrollCompressor(flow_cold, scroll_PR)
+                    scr1.estimate_ESM()
+                    test_scroll_weight += scr1.weight
+                    test_scroll_power += scr1.power
+                    test_scroll_machines.append(scr1)
+
+                    hot_T = flow_cold.temperature * ((np.power(scroll_PR, flow_cold.gm1/flow_cold.gamma) - 1)/scr1.efficiency + 1)
+
+                    flow_hot = component.GasFlow(mass_flow, hot_T, flow_cold.pressure*scroll_PR)
+                    Q = flow_hot.delta_h_delta_T(abs(250-flow_hot.temperature)) 
+
+                    A_HX_in = flow_hot.mass_flow / (flow_hot.density() * 10)
+
+                    hx1 = generate_heat_exchanger(flow_hot, Q, A_HX_in, 1-(1/scroll_PR), ESM_vector)
+
+                    test_scroll_cooling += hx1.cooling
+                    test_scroll_power += hx1.power
+                    test_scroll_weight += hx1.weight
+                    test_scroll_machines.append(hx1)
+
+                    T_in = 250
+                    HX_PR = hx1.pressure_drop / flow_hot.pressure
+                    p_in = flow_hot.pressure * (1 - HX_PR)
+
+                scroll_PR *= np.power(p_out_target/p_in, 1/test_num_scroll_compressors)
+            
+            p_out = p_in
+            T_out = T_in
+
+            test_scroll_ESM = ESM(test_scroll_weight, test_scroll_power, test_scroll_cooling, ESM_vector)
+
+            if test_scroll_ESM < best_scroll_ESM and p_out>p_out_target:
+                if verbose:print("\t \t", test_num_scroll_compressors, "scrolls beat", best_scroll_N,"scrolls")
+                best_scroll_ESM = test_scroll_ESM
+                best_scroll_weight = test_scroll_weight
+                best_scroll_power = test_scroll_power
+                best_scroll_cooling = test_scroll_cooling
+                best_scroll_machines = test_scroll_machines
+                best_scroll_N = test_num_scroll_compressors  
+                #print(p_out_initial, p_out, scroll_PR)
+                p_out_best = p_out
+                T_out_best = T_out
+
+        if verbose:print("\t \t", best_scroll_N,"scrolls are best")  
+
+    all_machines = machines_before_scroll + best_scroll_machines
+
+    if condense:
+        flow = component.GasFlow(mass_flow, T_out_best, p_out_best)
+        precondenser = generate_heat_exchanger(flow, flow.delta_h_delta_T(T_out - 220), flow.mass_flow / (flow.density() * 10), 0.1, ESM_vector)
+
+        p_out_best -= precondenser.pressure_drop
+
+        condenser = component.CondensingHX(mass_flow)
+        condenser.estimate_ESM()
+        condenser.estimate_pressure_drop(p_out_best)
+        p_out_best -= condenser.pressure_drop
+
+        buffer_tank = component.BufferTank(1500/1160)
+        buffer_tank.estimate_ESM()
+
+        all_machines.append(precondenser)
+        all_machines.append(condenser)
+        all_machines.append(buffer_tank)
+
+        if verbose:print("\t As-designed radial output pressure {:.1f}kPa".format((p_out_initial-precondenser.pressure_drop-condenser.pressure_drop)/1000))
+
+    total_work = 0
+    total_weight = 0
+    total_cooling = 0
+
+    num_axials = 0
+    num_radials = 0
+    num_scrolls = 0
+    num_hxs = 0
+
+    for machine in all_machines:
+        total_work += machine.power
+        total_cooling += machine.cooling
+        total_weight += machine.weight
+        if type(machine) == component.AxialStage: 
+            num_axials += 1
+        elif type(machine) == component.RadialStage: 
+            num_radials += 1
+        elif type(machine) == component.ScrollCompressor: 
+            num_scrolls += 1
+        elif type(machine) == component.HeatExchangerAdvanced: 
+            num_hxs += 1
+
+    exec_time = time.time() - start
+    if verbose:
+        print("")
+        print("Runtime {:.1f}".format(exec_time))
+        print("Weight {:.1f}kg".format(total_weight))
+        print("Power {:.1f}W-e".format(total_work))
+        print("Cooling {:.1f}W-th".format(total_cooling))
+        print("Specific compression work {:.1f}kJ/kg".format((total_work/mass_flow)/1000))
+        print("Total ESM {:.1f}kg-eq".format(ESM(total_weight, total_work, total_cooling, ESM_vector)))
+        print("Output pressure {:.1f}kPa".format(p_out_best/1000))
+        print("A {}-stage compressor with {} axial, {} radial and {} scroll compressor stages and {} intercoolers".format(
+            num_axials+num_radials+num_scrolls, num_axials, num_radials, num_scrolls, num_hxs))
     
-    print(best_hx)
-    HX_ESM.append(best_hx.ESM)"""
-
-    #HX_PR = hx1.pressure_drop / flow_hot.pressure
-    """if HX_PR >= 1:
-        HX_PR = 0.99
-    HX_length.append((hx1.duct_length+hx1.diffuser_length+hx1.nozzle_length))
-    HX_weight.append(hx1.weight)
-    HX_duct_length.append(hx1.duct_length)"""
-    #print(1-HX_PR, hx1.cooling_power, hx1.total_length*1000, hx1.duct_length*1000, hx1.pumping_power, hx1.n_tubes, 1000*hx1.duct_size, hx1.weight)
+    data_dict = {"Runtime": exec_time,
+                 "Weight": total_weight,
+                 "Output pressure": p_out_best}
     
-    T_in = 250
-    p_in = flow_cold.pressure * rad_PR * (1 - HX_PR)
+    return(all_machines, data_dict)
 
+def run_machines_day(machines, mass_flow, hours, design_T_in, design_p_in, verbose=True):
+    if verbose:print("Running daily variation")
+    all_data = [[]]*8
+    if hours[0]:
+        all_data[0] = run_machine(machines, 184.83, 775.79, mass_flow, "H0")
+    if hours[1]:
+        all_data[1] = run_machine(machines, 180.18, 779.94, mass_flow, "H3")
+    if hours[2]:
+        all_data[2] = run_machine(machines, 184.71, 792.95, mass_flow, "H6")
+    if hours[3]:
+        all_data[3] = run_machine(machines, 205.68, 796.48, mass_flow, "H9")
+    if hours[4]:
+        all_data[4] = run_machine(machines, 221.67, 782.96, mass_flow, "H12")
+    if hours[5]:
+        all_data[5] = run_machine(machines, 222.98, 770.60, mass_flow, "H15")
+    if hours[6]:
+        all_data[6] = run_machine(machines, 206.66, 773.60, mass_flow, "H18")
+    if hours[7]:
+        all_data[7] = run_machine(machines, 192.11, 773.11, mass_flow, "H21")
 
-#print(sum(HX_ESM))
-print("")
-print("power", total_compression_work)
-print("weight", total_compressor_weight)
-print("average efficiency", sum(compressor_efficiency)/len(compressor_efficiency))
-print("total ESM", total_ESM)
+    design_pow, design_cool = run_machine(machines, design_T_in, design_p_in, mass_flow, "Design")
 
-print(time.time() - start)
+    num_axials = 0
+    num_radials = 0
+    num_scrolls = 0
+    num_hxs = 0
 
-print(compressor_efficiency)
-print(p_in/1000)
+    total_weight = 0
+    
+    for machine in machines:
+        total_weight += machine.weight
+        if type(machine) == component.AxialStage: 
+            num_axials += 1
+        elif type(machine) == component.RadialStage: 
+            num_radials += 1
+        elif type(machine) == component.ScrollCompressor: 
+            num_scrolls += 1
+        elif type(machine) == component.HeatExchangerAdvanced: 
+            num_hxs += 1
+    
+    p_string = ""
+    c_string = ""
 
-"""fig, ax = plt.subplots()
-plt.plot(HX_duct_length, label="Length of HX duct")
-plt.plot(HX_length, label="Total HX length")
-plt.ylabel("Length (m)")
-plt.xlabel("Heat exchanger number")
-plt.title("Heat exchanger lengths with 50 bar liquid ammonia")
-plt.legend()
-"""
-"""fig, ax = plt.subplots()
-plt.plot(HX_weight)
-plt.ylabel("Weight (kg)")
-plt.xlabel("Heat exchanger number")
-plt.title("Heat exchanger weight with VLT")
-plt.show()"""
-"""
-print("total weight", str(sum(HX_weight)))
-print("max weight", str(max(HX_weight)))
+    p_string += "{} \t".format(num_hxs-1)
+    c_string += " \t"
+    p_string += "Power \t"
+    c_string += "Cooling \t"
 
-print("total length", str(sum(HX_length)))
-print("max length", str(max(HX_length)))
+    for i in all_data:
+        if len(i) != 0:
+            p_string += "{:.4f} \t".format(i[0])
+            c_string += "{:.4f} \t".format(i[1])
+        else:
+            p_string += "0 \t"
+            c_string += "0 \t"
 
-plt.show()"""
+    p_string += "{:.4f} \t".format(design_pow)
+    c_string += "{:.4f} \t".format(design_cool)
 
-#print(p_in)
-"""p_compress_out = p_in
-T_compress_out = 250
-compressed_flow = component.GasFlow(0.05, T_compress_out, p_compress_out)
-hx_cond = design.optimise_hx_pd(compressed_flow, 72.4e3, hx1.inlet_area, 0.02)
-print(hx_cond)
-print(hx_cond.duct_length)"""
+    p_string += "{:.1f} \t {} \t {} \t {}".format(total_weight, num_axials, num_radials, num_scrolls)
 
-"""
-print(hx1.pitch_diameter_ratio*hx1.tube_diameter*1000)
-print(hx1.bulk_area, , hx1.pitch_diameter_ratio)
-print(hx1.required_area)
-print(hx1.n_tubes_wide)"""
+    print(p_string)
+    print(c_string)
 
+def optimise_machine_design(mass_flow, design_T_in, design_p_in, scroll_target_p_out, PR_guess, N_rads, ESM_vector, condense=True, target_p_out=550e3, verbose=True):
+
+    """mass_flow = 0.0113
+    design_T_in = 199.85
+    design_p_in = 770.6
+
+    PR_guess = 1.84
+    target_p_out = 550e3
+    scroll_target_p_out = 550e3
+    
+    N_rads = 10"""
+    rad_PR = PR_guess
+    if verbose:print("Designing machine")
+    for i in range(4):
+        
+        machines, data_dict = design_machine(mass_flow, design_T_in, design_p_in, ESM_vector, N_rads, rad_PR, condense=condense, p_out_target=scroll_target_p_out, verbose=verbose)
+        if abs(data_dict["Output pressure"] -target_p_out) < 0.1e3:
+            break
+        else:
+            if verbose:print("Iteration to improve output pressure")
+            rad_PR *= np.power(target_p_out/data_dict["Output pressure"], 1/N_rads)
+    
+    return(machines)
+
+def optimise_design_system():
+    mass_flows = [0.0113, 0.0225, 0.0338, 0.0451, 0.0902]
+    design_T_ins = [199.85, 185.46, 183.04, 182.45, 180.18]
+    design_p_ins = [770.6, 775.79, 775.79, 779.94, 779.94]
+    hours = [[True]*8,
+             [True, True, True, False, False, False, False, True],
+             [True, True, True, False, False, False, False, False],
+             [False, True, True, False, False, False, False, False],
+             [False, True, False, False, False, False, False, False]]
+
+    condenses = [False, True, True, True, True]
+    scroll_p_out = [550e3, 573e3, 573e3, 573e3, 573e3]
+
+    """mass_flow = 0.0113
+    design_T_in = 199.85
+    design_p_in = 770.6"""
+
+    N_radials = [10, 15, 20, 25, 30]
+    PR_guesses = [1.833, 1.502, 1.358, 1.278, 1.2285]
+
+    ESM_vector = [1, .05, .075, 100]
+
+    for massflow_i, mass_flow in enumerate(mass_flows):
+        design_T_in = design_T_ins[massflow_i]
+        design_p_in = design_p_ins[massflow_i]
+
+        for nstg_i, nstg in enumerate(N_radials):
+            PR_guess = PR_guesses[nstg_i]
+
+            all_machines = optimise_machine_design(
+                mass_flow, design_T_in, design_p_in, scroll_p_out[massflow_i], PR_guess, nstg, ESM_vector, condenses[massflow_i], verbose=False)
+
+            run_machine(all_machines, design_T_in, design_p_in, mass_flow, "Design", verbose=False)
+
+            run_machines_day(all_machines, mass_flow, hours[massflow_i], design_T_in, design_p_in, verbose=False)
+        
+        print("")
+
+# Find the best compressor stack in the design family
+#optimise_design_system()
+
+#plt.show()

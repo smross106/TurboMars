@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import optimize
 
-#region
+
 class GasFlow(object):
     def __init__(self, mass_flow, temperature, pressure, carbon_dioxide=True):
         self.mass_flow = mass_flow
@@ -61,20 +61,24 @@ class GasFlow(object):
     def delta_h_delta_T(self, delta_T):
         delta_h = delta_T * self.cp
         return(delta_h)
-#endregion
+
+    def delta_T_delta_h(self, delta_h):
+        delta_T = delta_h / self.cp
+        return(delta_T)
+
 
 class Component(object):
     def __init__(self):
         pass
 
-#region
+
 class AxialStage(Component):
     def __init__(self, gasflow_in, pressure_ratio_stage, speed, work_coeff, flow_coeff, efficiency_guess):
         self.gasflow_in = gasflow_in
 
         self.pressure_ratio_stage = pressure_ratio_stage
 
-        self.work_stage = self.gasflow_in.delta_h_PR(self.pressure_ratio_stage) / efficiency_guess
+        self.work_stage = self.gasflow_in.delta_h_PR(self.pressure_ratio_stage)
 
         self.speed = speed
         self.speed_rad = speed * np.pi / 30
@@ -119,11 +123,13 @@ class AxialStage(Component):
 
         return(weight)
 
-    def ESM_estimate(self):
+    def estimate_ESM(self):
         self.power = self.work_stage * self.gasflow_in.mass_flow / self.efficiency
         power_weight = self.power * .149
 
         self.ESM = self.weight + power_weight
+
+        self.cooling = 0
 
         return(self.ESM)
 
@@ -203,22 +209,20 @@ class AxialStage(Component):
         out_str += "\n"
         out_str += "Total installed weight of {:.2f}kg".format(self.weight)
         out_str += "\n"
-        out_str += "Equivalent system mass of {:.1f}kg-eq".format(self.ESM)
-        out_str += "\n"
         out_str += "Power consumption of {:.1f}W".format(self.power)
         out_str += "\n"
         out_str += "Estimated efficiency of {:.1f}%".format(self.estimate_efficiency()*100)
         return(out_str)
-#endregion
 
-#region
+
+
 class RadialStage(Component):
     def __init__(self, gasflow_in, pressure_ratio_stage, speed, work_coeff, flow_coeff, efficiency_guess, radius_hub_inlet, diffusion_ratio=3):
         self.gasflow_in = gasflow_in
 
         self.pressure_ratio_stage = pressure_ratio_stage
 
-        self.work_stage = self.gasflow_in.delta_h_PR(self.pressure_ratio_stage) / efficiency_guess
+        self.work_stage = self.gasflow_in.delta_h_PR(self.pressure_ratio_stage)
 
         self.speed = speed
         self.speed_rad = speed * np.pi / 30
@@ -365,11 +369,13 @@ class RadialStage(Component):
         self.weight = compressor_weight
         return(self.weight)
     
-    def ESM_estimate(self):
+    def estimate_ESM(self):
         self.power = self.work_stage * self.gasflow_in.mass_flow / self.efficiency
         power_weight = self.power * .149
 
         self.ESM = self.weight + power_weight
+
+        self.cooling = 0
 
         return(self.ESM)
 
@@ -433,7 +439,7 @@ class RadialStage(Component):
 
         impeller_efficiency_estimate = self.efficiency_delta_reynolds(impeller_efficiency_estimate)
         impeller_efficiency_estimate = self.efficiency_delta_tip_gap(impeller_efficiency_estimate)
-        #impeller_efficiency_estimate = self.efficiency_delta_mach(impeller_efficiency_estimate)
+        impeller_efficiency_estimate = self.efficiency_delta_mach(impeller_efficiency_estimate)
 
         if impeller_efficiency_estimate<0.01:
             impeller_efficiency_estimate = 0.01
@@ -444,6 +450,9 @@ class RadialStage(Component):
         
         # Correlation from diffuser performance map
         stator_efficiency = 1 - (0.7328 * np.power(self.diffusion_ratio, -0.997))
+        
+        # Correction for incidence, CFD
+        stator_efficiency -= 0.15
 
         self.efficiency = impeller_efficiency_estimate * stator_efficiency
         self.efficiency_impeller = impeller_efficiency_estimate
@@ -527,17 +536,19 @@ class RadialStage(Component):
         out_str += "Diffuser outlet radius: {:.1f}mm".format(
             self.R_stator_exit*1000)
         out_str += "\n"
-        out_str += "Total installed weight of {:.2f}kg".format(self.weight)
+        out_str += "Stator flow angle: {:.1f} degrees, with {:.0f} blades".format(
+            abs(self.rotor_exit_flow_angle), int(self.N_blades_stator)
+        )
         out_str += "\n"
-        out_str += "Equivalent system mass of {:.1f}kg-eq".format(self.ESM)
+        out_str += "Total installed weight of {:.2f}kg".format(self.weight)
         out_str += "\n"
         out_str += "Power consumption of {:.1f}W".format(self.power)
         out_str += "\n"
         out_str += "Estimated efficiency of {:.1f}%".format(self.estimate_efficiency()*100)
         return(out_str)
-#endregion    
+   
 
-#region
+
 class HeatExchanger(Component):
     def __init__(self, gasflow_in, delta_h, air_speed, pressure_drop):
         self.gasflow_in = gasflow_in
@@ -561,27 +572,28 @@ class HeatExchanger(Component):
             diameter = 5e-3
             wall_thickness = 0.5e-3
 
-        cooling_power = self.gasflow_in.mass_flow * self.delta_h
+        cooling = self.gasflow_in.mass_flow * self.delta_h
         Re = self.air_speed * self.gasflow_in.density() * diameter / 14.4e-6
         Nu_air = 0.029 * np.power(Re, 0.8) * 0.9244
         h = Nu_air * 0.011 /  diameter
         delta_T = 10
-        area = cooling_power / (h * delta_T)
+        area = cooling / (h * delta_T)
 
         hx_weight = area * wall_thickness * 8960
 
         self.weight = hx_weight
         return(hx_weight)
-#endregion
 
-#region
+
+
 class HeatExchangerAdvanced(Component):
-    def __init__(self, cooling_power, airflow, inlet_area, bulk_area_ratio, 
+    def __init__(self, cooling, gasflow_in, inlet_area, bulk_area_ratio, 
             tube_diameter=2e-3, pitch_diameter_ratio=1.25, 
             wall_thickness=40e-6, wall_thermal_conductivity=300, geometry="wall",
-            coolant="VLT", coolant_velocity=2, neglect_peak_velocity=False):
-        self.cooling_power = cooling_power
-        self.airflow = airflow
+            coolant="VLT", coolant_velocity=2, neglect_peak_velocity=False,
+            design_T_in=300, design_delta_T=50):
+        self.cooling = cooling
+        self.gasflow_in = gasflow_in
 
         self.bulk_area_ratio = bulk_area_ratio
         self.inlet_area = inlet_area
@@ -611,6 +623,9 @@ class HeatExchangerAdvanced(Component):
             self.coolant_dT = 20
             self.coolant_thermal_conductivity = 0.32
             self.coolant_Pr = 600
+            self.coolant_max_T_out = 373
+            self.coolant_T_in = 230
+
         elif coolant == "VLT":
             # Coolant in fluid side is Therminol VLT
             # Data from https://www.therminol.com/sites/therminol/files/documents/TF-21_Therminol_VLT.pdf
@@ -621,6 +636,8 @@ class HeatExchangerAdvanced(Component):
             self.coolant_dT = 50
             self.coolant_thermal_conductivity = 0.1169
             self.coolant_Pr = 31.04
+            self.coolant_max_T_out = 400
+            self.coolant_T_in = 200
         
         elif coolant == "supercrit He":
             # Coolant in fluid side is supercritical helium at 20 bar pressure
@@ -632,19 +649,27 @@ class HeatExchangerAdvanced(Component):
             self.coolant_dT = 50
             self.coolant_thermal_conductivity = 0.13517
             self.coolant_Pr = 0.6623
+            self.coolant_max_T_out = 3000
+            self.coolant_T_in = 200
         
         elif coolant == "ammonia":
             # Coolant in fluid side is liquid ammonia at 20 bar pressure
             # Data from NIST databook
-            # With constant delta T of 50C (250K to 330K), evaluate properties at 240K
+            # With constant delta T of 40C (250K to 330K), evaluate properties at 240K
             self.coolant_inlet = 200
             self.coolant_viscosity = 25.696e-5
             self.coolant_density = 683.88
-            self.coolant_dT = 50
+            self.coolant_dT = 40
             self.coolant_thermal_conductivity = 0.58261
             self.coolant_Pr = 1.9613
+            self.coolant_max_T_out = 312
+            self.coolant_T_in = 210
         
         self.neglect_peak_velocity = neglect_peak_velocity
+
+        # Used for calculating cooling of off-design point heat exchanger
+        self.design_T_in = design_T_in
+        self.design_delta_T = design_delta_T
         
         self.make_geometry()
     
@@ -662,7 +687,7 @@ class HeatExchangerAdvanced(Component):
 
         # Geometry of actual HX duct
         self.heat_transfer_per_unit_area = self.heat_transfer_row()
-        self.required_area = self.cooling_power / self.heat_transfer_per_unit_area
+        self.required_area = self.cooling / self.heat_transfer_per_unit_area
 
         
         self.n_tubes_wide = np.floor(self.duct_size / (self.pitch_diameter_ratio * self.tube_diameter)) - 1
@@ -684,7 +709,6 @@ class HeatExchangerAdvanced(Component):
         
         self.total_length = self.duct_length + self.nozzle_length + self.diffuser_length
             
-    
     def weight_estimate(self):
         # Assume a tube density of 9000
         one_tube_weight = self.duct_size * self.wall_thickness * np.pi * self.tube_diameter * 9000
@@ -695,7 +719,7 @@ class HeatExchangerAdvanced(Component):
         # Assume a duct material density of 2700 (aluminium)
         # and safety factor of 3 on hoop stress, or 1mm thick
         duct_wall_area = 4 * self.duct_length * self.duct_size
-        duct_wall_thickness = max(self.airflow.pressure * (self.duct_size/2) / 133e6, 1e-3)
+        duct_wall_thickness = max(self.gasflow_in.pressure * (self.duct_size/2) / 133e6, 1e-3)
         duct_weight = duct_wall_area * duct_wall_thickness * 2700
 
         # Diffuser wall area
@@ -734,17 +758,17 @@ class HeatExchangerAdvanced(Component):
 
         
         # Gas thermal resistance
-        bulk_velocity = self.airflow.mass_flow / (self.bulk_area * self.airflow.density())
+        bulk_velocity = self.gasflow_in.mass_flow / (self.bulk_area * self.gasflow_in.density())
         if self.neglect_peak_velocity:
             peak_velocity = bulk_velocity
         else:
             peak_velocity = bulk_velocity * self.pitch_diameter_ratio / (self.pitch_diameter_ratio - 1)
 
-        rho_tubes = self.airflow.density_static(peak_velocity)
+        rho_tubes = self.gasflow_in.density_static(peak_velocity)
         if self.geometry == "row" or self.geometry == "staggered":
             # Implements https://thermopedia.com/cn/content/1212/
             
-            Re_tubes = peak_velocity * rho_tubes * self.tube_diameter / self.airflow.viscosity
+            Re_tubes = peak_velocity * rho_tubes * self.tube_diameter / self.gasflow_in.viscosity
 
             c = 1
             m = 1
@@ -769,13 +793,13 @@ class HeatExchangerAdvanced(Component):
                     c = 0.116
                     m = 0.700
             
-            Nu_gas = c * np.power(Re_tubes, m) * np.power(self.airflow.Pr, 1/3)
-            heat_transfer_coefficient_gas = Nu_gas * self.airflow.k / self.tube_diameter
+            Nu_gas = c * np.power(Re_tubes, m) * np.power(self.gasflow_in.Pr, 1/3)
+            heat_transfer_coefficient_gas = Nu_gas * self.gasflow_in.k / self.tube_diameter
             gas_thermal_resistance = 1 / heat_transfer_coefficient_gas
         
         elif self.geometry == "wall":
             D_hydraulic = 2 * (self.pitch_diameter_ratio - 1) * self.tube_diameter
-            Re_tubes = peak_velocity * rho_tubes * D_hydraulic / self.airflow.viscosity
+            Re_tubes = peak_velocity * rho_tubes * D_hydraulic / self.gasflow_in.viscosity
 
             f = self.friction_factor_walls()
                 
@@ -786,20 +810,20 @@ class HeatExchangerAdvanced(Component):
             elif Re_tubes < 3e3:
                 # Gnielinski relationship, Cengel pg 441
 
-                Nu_gas = (f/8) * (Re_tubes - 1000) * self.airflow.Pr / (
-                    1 + 12.7 * np.power(f/8, 0.5) * (np.power(self.airflow.Pr, 2/3) - 1)
+                Nu_gas = (f/8) * (Re_tubes - 1000) * self.gasflow_in.Pr / (
+                    1 + 12.7 * np.power(f/8, 0.5) * (np.power(self.gasflow_in.Pr, 2/3) - 1)
                 )
 
             elif 3e3 <= Re_tubes and Re_tubes< 5e6:
                 # Gnielinski relationship, Cengel pg 441
-                Nu_gas = (f/8) * (Re_tubes - 1000) * self.airflow.Pr / (
-                    1 + 12.7 * np.power(f/8, 0.5) * (np.power(self.airflow.Pr, 2/3) - 1)
+                Nu_gas = (f/8) * (Re_tubes - 1000) * self.gasflow_in.Pr / (
+                    1 + 12.7 * np.power(f/8, 0.5) * (np.power(self.gasflow_in.Pr, 2/3) - 1)
                 )
             else:
                 # Chilton-Colburn analogy
-                Nu_gas = 0.125 * f * Re_tubes * np.power(self.airflow.Pr, 1/3)
+                Nu_gas = 0.125 * f * Re_tubes * np.power(self.gasflow_in.Pr, 1/3)
 
-            heat_transfer_coefficient_gas = Nu_gas * self.airflow.k / D_hydraulic
+            heat_transfer_coefficient_gas = Nu_gas * self.gasflow_in.k / D_hydraulic
             gas_thermal_resistance = 1 / heat_transfer_coefficient_gas
 
         thermal_resistance = coolant_thermal_resistance + wall_thermal_resistance + gas_thermal_resistance
@@ -809,17 +833,17 @@ class HeatExchangerAdvanced(Component):
         return(heat_flow_per_unit_area)
 
     def gas_pressure_drop(self):
-        bulk_velocity = self.airflow.mass_flow / (self.bulk_area * self.airflow.density())   
+        bulk_velocity = self.gasflow_in.mass_flow / (self.bulk_area * self.gasflow_in.density())   
         if self.neglect_peak_velocity:
             peak_velocity = bulk_velocity
         else:
             peak_velocity = bulk_velocity * self.pitch_diameter_ratio / (self.pitch_diameter_ratio - 1)
 
-        rho_tubes = self.airflow.density_static(peak_velocity)
+        rho_tubes = self.gasflow_in.density_static(peak_velocity)
 
         if self.geometry == "row" or self.geometry == "staggered":
 
-            Re_tubes = peak_velocity * rho_tubes * self.tube_diameter / self.airflow.viscosity
+            Re_tubes = peak_velocity * rho_tubes * self.tube_diameter / self.gasflow_in.viscosity
             # Implements equations from https://thermopedia.com/content/1211/
             
             # Euler number correlations
@@ -961,10 +985,10 @@ class HeatExchangerAdvanced(Component):
         # Based on performance map interpolation, loss coefficient is about 0.15 for all ratios
         # 5% loss in nozzle
 
-        inlet_velocity = self.airflow.mass_flow / (self.inlet_area * self.airflow.density())
-        bulk_velocity = self.airflow.mass_flow / (self.bulk_area * self.airflow.density())
-        self.pressure_drop_diffuser = (0.5 * self.airflow.density() * np.power(inlet_velocity, 2)) * 0.15
-        self.pressure_drop_nozzle = (0.5 * self.airflow.density() * np.power(bulk_velocity, 2)) * 0.05
+        inlet_velocity = self.gasflow_in.mass_flow / (self.inlet_area * self.gasflow_in.density())
+        bulk_velocity = self.gasflow_in.mass_flow / (self.bulk_area * self.gasflow_in.density())
+        self.pressure_drop_diffuser = (0.5 * self.gasflow_in.density() * np.power(inlet_velocity, 2)) * 0.15
+        self.pressure_drop_nozzle = (0.5 * self.gasflow_in.density() * np.power(bulk_velocity, 2)) * 0.05
 
         self.pressure_drop = self.pressure_drop_hx + self.pressure_drop_diffuser + self.pressure_drop_nozzle
 
@@ -999,11 +1023,11 @@ class HeatExchangerAdvanced(Component):
         self.pumping_power = pumping_power
 
     def friction_factor_walls(self):
-        bulk_velocity = self.airflow.mass_flow / (self.bulk_area * self.airflow.density())
+        bulk_velocity = self.gasflow_in.mass_flow / (self.bulk_area * self.gasflow_in.density())
         peak_velocity = bulk_velocity * self.pitch_diameter_ratio / (self.pitch_diameter_ratio - 1)
-        rho_tubes = self.airflow.density_static(peak_velocity)
+        rho_tubes = self.gasflow_in.density_static(peak_velocity)
         D_hydraulic = 2 * (self.pitch_diameter_ratio - 1) * self.tube_diameter
-        Re_tubes = peak_velocity * rho_tubes * D_hydraulic / self.airflow.viscosity
+        Re_tubes = peak_velocity * rho_tubes * D_hydraulic / self.gasflow_in.viscosity
 
         if Re_tubes < 2100:
             # Laminar flow
@@ -1034,25 +1058,26 @@ class HeatExchangerAdvanced(Component):
 
     def estimate_ESM(self):
         self.power_weight = self.pumping_power * .149
-        self.cooling_weight = self.cooling_power * .121
+        self.cooling_weight = self.cooling * .121
+        self.power = self.pumping_power
 
         self.ESM = self.weight + self.power_weight + self.cooling_weight
 
     def __repr__(self):
         out_str = ""
-        relative_pd = 100 * self.pressure_drop / self.airflow.pressure
+        relative_pd = 100 * self.pressure_drop / self.gasflow_in.pressure
         if self.geometry == "wall":
             out_str += " \t A sintered tube-wall heat exchanger, with entry pressure of {:.0f}Pa and a drop of {:.1f}%".format(
-                self.airflow.pressure, relative_pd)
+                self.gasflow_in.pressure, relative_pd)
         elif self.geometry == "staggered":
             out_str += " \t A staggered tube heat exchanger, with entry pressure of {:.0f}Pa and a drop of {:.1f}%".format(
-                self.airflow.pressure, relative_pd)
+                self.gasflow_in.pressure, relative_pd)
         elif self.geometry == "row":
             out_str += " \t A tube array heat exchanger, with entry pressure of {:.0f}Pa and a drop of {:.1f}%".format(
-                self.airflow.pressure, relative_pd)
+                self.gasflow_in.pressure, relative_pd)
         out_str += "\n"
         out_str += "Cooling power: {:.0f}W with temperature drop of {:.1f}K ".format(
-            self.cooling_power, self.cooling_power / (self.airflow.mass_flow * self.airflow.cp))
+            self.cooling, self.cooling / (self.gasflow_in.mass_flow * self.gasflow_in.cp))
         out_str += "\n"
         out_str += "Total number of tube passes: {:.0f}".format(self.n_tubes)
         out_str += "\n"
@@ -1062,40 +1087,109 @@ class HeatExchangerAdvanced(Component):
         out_str += "Total installed weight of {:.2f}kg".format(self.weight)
         out_str += "\n"
         out_str += "Coolant pumping power of {:.2f}W".format(self.pumping_power)
-        out_str += "\n"
-        out_str += "Equivalent system mass of {:.1f}kg-eq".format(self.ESM)
 
         return(out_str)
-#endregion    
+   
 
-"""bc_flow = GasFlow(0.05, 230, 1900)
 
-radial_1 = RadialStage(bc_flow, 11e3, 6000, 1.0, 0.75, 0.88, 0.1, 60)
+class ScrollCompressor(Component):
+    def __init__(self, gasflow_in, pressure_ratio_stage):
+        self.gasflow_in = gasflow_in
+        self.pressure_ratio_stage = pressure_ratio_stage
 
-print(radial_1.weight_estimate(500e6, 2700))
-print(radial_1.weight_estimate(2000e6, 1700))"""
-"""suitflow = GasFlow(0.0329, 300, 101325, carbon_dioxide=False)
-suit_hx = HeatExchangerAdvanced(200, suitflow, 0.01131, 0.01131, 
-    tube_diameter=1.6e-3, wall_thickness=0.5e-3,
-    geometry="wall", pitch_diameter_ratio=16.6, coolant_velocity=0.5)
-suit_hx.gas_pressure_drop()
-suit_hx.coolant_pumping_power()
-suit_hx.weight_estimate()
-print(suit_hx.pressure_drop)
-print(suit_hx.duct_length*1000)
-print(suit_hx.pumping_power)
-print(suit_hx.n_tubes_wide)
-print(suit_hx.n_tubes)
-print(suit_hx.tubes_weight)
-print(suit_hx.weight - suit_hx.tubes_weight)
-print(suit_hx.weight)"""
-#bc_flow = GasFlow(0.05, 300, 1900)
-#wall_hx = HeatExchangerAdvanced(2000, bc_flow, 0.015, 0.045, geometry="wall", pitch_diameter_ratio=2)
-#wall_hx.gas_pressure_drop()
-#tube_hx = HeatExchangerAdvanced(2000, bc_flow, 0.015, 0.045, geometry="row", pitch_diameter_ratio=2)
-#tube_hx.gas_pressure_drop()
-#print(wall_hx.pressure_drop, tube_hx.pressure_drop)
-#print(wall_hx.duct_length, tube_hx.duct_length)
-#print(wall_hx.n_tubes, tube_hx.n_tubes)
-#print(wall_hx.n_rows, tube_hx.n_rows)
-#print(wall_hx.n_tubes_wide, tube_hx.n_tubes_wide)
+        self.work_stage = self.gasflow_in.delta_h_PR(self.pressure_ratio_stage)
+    
+    def estimate_efficiency(self):
+        log_PR = np.log(self.pressure_ratio_stage) / np.log(10)
+        eta_poly = 0.7578 - 0.1954 * log_PR
+        self.efficiency = ((np.power(self.pressure_ratio_stage, (self.gasflow_in.gamma-1)/self.gasflow_in.gamma) - 1) / 
+                    (np.power(self.pressure_ratio_stage, (self.gasflow_in.gamma-1)/(self.gasflow_in.gamma*eta_poly)) - 1))
+          
+    def estimate_weight(self):
+        # Assume AirSquared's Big Atmosphere MOXIE system is rated for 2.7kg/hr at 900Pa, 251K
+        # Scale according to volumetric flow
+        # Then use Eric Hinterman scaling to get the mass
+
+        basis_weight = 28.2
+        scaling_k = 0.8
+        basis_volume_flow = 0.03953 # m3/s in the Air Squared scroll
+
+        volume_flow = self.gasflow_in.mass_flow / self.gasflow_in.density()
+
+        self.weight = basis_weight * np.power(volume_flow/basis_volume_flow, scaling_k)
+
+
+    def estimate_ESM(self):
+        self.estimate_efficiency()
+        self.estimate_weight()
+
+        self.power = self.work_stage * self.gasflow_in.mass_flow / self.efficiency
+        self.cooling = 0
+    
+    def __repr__(self):
+        out_str = ""
+        out_str += " \t A scroll compressor, with entry pressure of {:.0f}Pa".format(self.gasflow_in.pressure)
+        out_str += "\n"
+        out_str += "Total installed weight of {:.2f}kg".format(self.weight)
+        out_str += "\n"
+        out_str += "Power consumption of {:.1f}W".format(self.power)
+        out_str += "\n"
+        out_str += "Estimated efficiency of {:.1f}%".format(self.efficiency*100)
+
+        return(out_str)
+
+class CondensingHX(Component):
+    def __init__(self, mass_flow):
+        self.mass_flow = mass_flow
+
+        self.cooling_coefficient = 350e3 # J/kg to condense carbon dioxide in the right pressure range
+        self.power_coefficient = 0.001   # We/Wth, average for modelled HXs is 0.000392704
+        self.weight_coefficient = 0.006  # kg/Wth, average for modelled HXs is 0.002016862
+
+        self.pressure_drop_coefficient = 1e-7 # 1/(J/kg), average for modelled HXs is 3.5E-8
+    
+    def estimate_cooling(self):
+        self.cooling = self.mass_flow * self.cooling_coefficient
+
+    def estimate_power(self):
+        self.power = self.cooling * self.power_coefficient
+    
+    def estimate_weight(self):
+        self.weight = self.cooling * self.weight_coefficient
+    
+    def estimate_pressure_drop(self, pressure_in):
+        pressure_drop_ratio = self.pressure_drop_coefficient * self.cooling_coefficient
+
+        self.pressure_drop = pressure_drop_ratio * pressure_in
+
+    
+    def estimate_ESM(self):
+        self.estimate_cooling()
+        self.estimate_weight()
+        self.estimate_power()
+
+
+class BufferTank(Component):
+    def __init__(self, volume_capacity):
+        self.volume_capacity = volume_capacity
+        self.h24 = False
+        self.night = False
+
+        self.wall_density = 8000
+        self.wall_thickness = 2e-3
+
+        self.estimate_ESM()
+    
+    def estimate_weight(self):
+        radius = np.power(self.volume_capacity*1.1 / (np.pi * 4/3), 1/3)
+        area = np.power(radius, 2) * 4 * np.pi
+        self.weight = area * self.wall_thickness * self.wall_density
+
+    def estimate_power(self):
+        self.power = 0
+    
+    def estimate_ESM(self):
+        self.estimate_weight()
+        self.estimate_power()
+        self.cooling = 0
+
