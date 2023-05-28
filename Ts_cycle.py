@@ -1,11 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.axes as Axes
-#from CoolProp.CoolProp import PropsSI
+from CoolProp.CoolProp import PropsSI
 from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+import matplotlib
 
 
 
@@ -22,8 +23,8 @@ def plot_contours(ax, Trange, srange, hgrid, pgrid, dgrid):
     
     
     
-    ax.clabel(pcont, pcont.levels[::4], inline=False, fontsize=10)
-    ax.clabel(hcont, hcont.levels[::5], inline=False, fontsize=10)
+    ax.clabel(pcont, pcont.levels[::2], inline=False, fontsize=10, fmt=matplotlib.ticker.EngFormatter(unit="Pa",places=0))
+    ax.clabel(hcont, hcont.levels[::5], inline=False, fontsize=10, fmt=matplotlib.ticker.EngFormatter(unit="J/kg"))
     #ax.contour(srange, Trange, dgrid, levels=[  1e-3, 2.5e-3, 5e-3, 7.5e-3, 
     #                                                        1e-2, 2.5e-2, 5e-2, 7.5e-2, 
     #                                                        1e-1, 2.5e-1, 5e-1, 7.5e-1, 
@@ -71,7 +72,7 @@ def plot_starting_conditions(ax, Trange, srange, pgrid):
 
     collection = PatchCollection([bounding_polygon], color="orange")
     ax.add_collection(collection)"""
-    start_point = [185, 960]
+    start_point = [185.46, 776]
     start_point_Ts = get_Tp_pair(Trange, srange, pgrid, start_point)
     plt.scatter(start_point_Ts[0], start_point_Ts[1], color="orange", label="Start point")
 
@@ -84,10 +85,10 @@ def plot_whole_graph(ax, Trange, srange, hgrid, pgrid, dgrid):
     ax.set_xlabel("Entropy, kJ/kg/K")
     ax.set_ylabel("Temperature, K")
 
-    ax.set_ylim(140, 450)
+    ax.set_ylim(140, 350)
     ax.set_xlim(1.5, 4.5)
 
-    ax.set_title("Carbon dioxide Ts diagram at low temperatures")
+    ax.set_title("Atmospheric system process diagram")
 
 def find_nearest_nd(arr, val):
     "Element in nd array `a` closest to the scalar value `a0`"
@@ -195,7 +196,7 @@ Trange, srange, hgrid, pgrid, dgrid, label=None, linecolour="k", return_machine_
         )
 
         # Find the p and T for the intercooler (if required)
-        if out_sT[1] > (intercool_temp) and unit != len(pressure_ratios)-1:
+        if out_sT[1] > (intercool_temp):
             cool_p = out_p * (1 - intercool_pressure_drops[unit] - 0.01)
             cool_T = intercool_temp
 
@@ -224,6 +225,22 @@ Trange, srange, hgrid, pgrid, dgrid, label=None, linecolour="k", return_machine_
         else:
             in_Tp = [out_sT[1], out_p]
             in_sT = out_sT
+    
+    cond_in_s = PropsSI('Smass','T',220,'Q',1,'CO2')
+    cond_out_s = PropsSI('Smass','T',220,'Q',0,'CO2')
+    
+    ax.plot([in_sT[0], cond_in_s/1000], [in_sT[1], 220], color=linecolour, label=label)
+    
+    machine_params.append(
+                {
+                    "type":"h",
+                    "p in":in_Tp[1],
+                    "T in":in_Tp[1],
+                    "delta h":830*(in_Tp[0]-220),
+                }
+            )
+
+    ax.plot([cond_in_s/1000, cond_out_s/1000], [220, 220], color=linecolour, label=label)
         
         
         
@@ -254,9 +271,9 @@ def main_load():
     Trange, srange, hgrid, pgrid, dgrid = get_grids()
 
     #fig = Figure(figsize=(5, 4), dpi=100)
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(4.41,3.31))
+    fig.subplots_adjust(bottom=0.125)
 
-    start = [185.341, 900]
 
     print(fig, ax)
 
@@ -281,16 +298,15 @@ def main_load():
     #                               [250, 250, 250, 250, 250, 250, 250, 250], 
     #                               0.0, Trange, srange, hgrid, pgrid, label="Ideal machines", linecolour="g")
 
-    plt.legend()
+    plt.legend(handlelength=1)
     return(fig, ax, Trange, srange, hgrid, pgrid, dgrid)
 
 def main_draw(Trange, srange, hgrid, pgrid, dgrid ):
 
     #fig = Figure(figsize=(5, 4), dpi=100)
     #ax = fig.add_subplot()
-    fig, ax = plt.subplots()
-    
-    start = [185.341, 900]
+    fig, ax = plt.subplots(figsize=(4.41, 3.30))
+    fig.subplots_adjust(bottom=0.125)
 
     plot_whole_graph(ax, Trange, srange, hgrid, pgrid, dgrid)
 
@@ -313,11 +329,14 @@ def main_draw(Trange, srange, hgrid, pgrid, dgrid ):
     #                               [250, 250, 250, 250, 250, 250, 250, 250], 
     #                               0.0, Trange, srange, hgrid, pgrid, label="Ideal machines", linecolour="g")
 
-    plt.legend()
+    plt.legend(handlelength=1)
     return(fig, ax)
 
 def generate_radiator_cycle(n_ICs, T_in, P_in, P_out, IC_out_temp, IC_pressure_drop_per_K):
     efficiency_guess = 0.7
+    efficiencies = [0.846, 0.846, 0.846, 0.846, 0.846, 0.846, 
+                    0.599, 0.62, 0.609, 0.523, 0.653, 0.653, 0.625, 0.667, 0.65,
+                    0.71, 0.71, 0.71, 0.71, 0.71, 0.71, 0.71]
     PR_total = P_out / P_in
     # Use a loop to set the desired compression ratio, taking into account the intercooler pressure drop
     for i in range(5):
@@ -327,7 +346,7 @@ def generate_radiator_cycle(n_ICs, T_in, P_in, P_out, IC_out_temp, IC_pressure_d
 
         for block in range(n_ICs+1):
             P_end = PR_block * P_start
-            delta_T = T_start * (PR_block**(0.31/1.31) - 1) / efficiency_guess
+            delta_T = T_start * (PR_block**(0.31/1.31) - 1) / efficiencies[block]
             T_end = T_start + delta_T
 
             if T_end > IC_out_temp:
@@ -356,9 +375,9 @@ def generate_radiator_cycle(n_ICs, T_in, P_in, P_out, IC_out_temp, IC_pressure_d
     PR_block = np.power(PR_total, 1/(n_ICs+1))
     for block in range(n_ICs+1):
         pressure_ratios.append(PR_block)
-        efficiencies.append(efficiency_guess)
+        efficiencies.append(0.7)
         P_end = PR_block * P_start
-        delta_T = T_start * (PR_block**(0.31/1.31) - 1) / efficiency_guess
+        delta_T = T_start * (PR_block**(0.31/1.31) - 1) / efficiencies[block]
         T_end = T_start + delta_T
         if T_end > IC_out_temp:
             P_drop = IC_pressure_drop_per_K * abs(T_end - IC_out_temp)
@@ -453,18 +472,30 @@ def generate_icemelt_cycle(n_ICs, T_in, P_in, P_out, sublimation_line_margin, IC
     
     return(pressure_ratios, efficiencies, IC_temps, IC_pressure_drops)
 
-#pressure_ratios, efficiencies, IC_temps, IC_pressure_drops = generate_radiator_cycle(10, 190, 900, 600e3, 273, 5e-4)
+pressure_ratios, efficiencies, IC_temps, IC_pressure_drops = generate_radiator_cycle(16, 185.46, 776, 550e3, 250, 1.25e-4)
 #pressure_ratios_i, efficiencies_i, IC_temps_i, IC_pressure_drops_i = generate_icemelt_cycle(5, 190, 900, 600e3, 40, 5e-4)
 #pressure_ratios_i, efficiencies_i, IC_temps_i, IC_pressure_drops_i = generate_radiator_cycle(10, 190, 900, 600e3, 250, 10e-4, 1)
 #pressure_ratios_j, efficiencies_j, IC_temps_j, IC_pressure_drops_j = generate_radiator_cycle(3, 190, 900, 600e3, 250, 10e-4, 1)
 
-#fig, ax, Trange, srange, hgrid, pgrid, dgrid = main_load()
+plt.rcParams.update({
+    "text.usetex": True,
+    'mathtext.default': 'regular'
+})
+plt.rc('text.latex')
+plt.rc('font', family='sans-serif')
 
-#plot_ideal_process(ax, [190, 900], pressure_ratios, efficiencies, IC_temps, IC_pressure_drops, Trange, srange, hgrid, pgrid, dgrid, label="1")
+fig, ax, Trange, srange, hgrid, pgrid, dgrid = main_load()
+
+
+
+plot_ideal_process(ax, [185.46, 776], pressure_ratios, efficiencies, IC_temps, IC_pressure_drops, Trange, srange, hgrid, pgrid, dgrid, label="1")
 #plot_ideal_process(ax, [190, 900], pressure_ratios_i, efficiencies_i, IC_temps_i, IC_pressure_drops_i, Trange, srange, hgrid, pgrid, dgrid, label="1", linecolour="b")
 #plot_ideal_process(ax, [190, 900], pressure_ratios_j, efficiencies_j, IC_temps_j, IC_pressure_drops_j, Trange, srange, hgrid, pgrid, dgrid, label="1", linecolour="r")
 
-#plt.show()
+ax.set_yticklabels([100, 150, 200, 250, 300, 350], usetex=True)
+ax.set_xticklabels([1.5, 2, 2.5, 3, 3.5, 4, 4.5], usetex=True)
+
+plt.show()
 """
 fig, ax, Trange, srange, hgrid, pgrid, dgrid = main_load()
 plt.show()"""

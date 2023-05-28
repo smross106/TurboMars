@@ -122,7 +122,7 @@ def make_radial(input_args, *args, output=False):
     elif work_coeff < 0.1:
         constraint_weight += abs(work_coeff - 0.1)**2 * 1e5
 
-    if flow_coeff < 0.001:
+    if flow_coeff < 0.01:
         constraint_weight += 1e20
     elif flow_coeff > 2:
         constraint_weight += abs(flow_coeff - 2)**2 * 1e5
@@ -291,17 +291,17 @@ def optimise_axial(flow_in, pressure_ratio_stage, efficiency_guess, ESM_vector):
         y = 0.8*np.array(x0, copy=True)
         if y[k] != 0:
             y[k] = x0_upper[k]
-        else:
             y[k] = zdelt
         sim[k + 1] = y
 
     properties = optimize.minimize(make_axial, 
         x0, 
         args=(flow_in, pressure_ratio_stage, efficiency_guess, ESM_vector),
-        method="Nelder-Mead", options={"maxiter":10000, "initial_simplex":sim}
+        method="Nelder-Mead", options={"maxiter":10000, "initial_simplex":sim, "return_all":False, "fatol":1e-4, "xatol":1e-4}
         )
 
 
+    #print(properties)
     (speed, work_coeff, flow_coeff) = properties.x
 
     axial = component.AxialStage(flow_in, pressure_ratio_stage, speed, work_coeff, flow_coeff, efficiency_guess)
@@ -436,7 +436,8 @@ def optimise_hx_pd(flow_in, cooling_deltah, inlet_area, target_PD, ESM_vector, c
         x0, 
         args=(cooling_power, flow_in, inlet_area, target_PD, ESM_vector, coolant) ,
         method="Nelder-Mead", options={"maxiter": 20000, "disp":False, "adaptive":True, 
-        "return_all":False, "initial_simplex":sim}
+        "return_all":False, "initial_simplex":sim},
+        bounds=[(1, 10), (0.1, 2), (0.1, 50), (10e-3, 1), (1, 15)],
         #method='SLSQP'
         #constraints=object_cons, method="trust-constr", jac="3-point", hess=optimize.BFGS(), options={"maxiter":2000}
         )
@@ -455,7 +456,7 @@ def optimise_hx_pd(flow_in, cooling_deltah, inlet_area, target_PD, ESM_vector, c
 
     if properties.success == False:
         print(properties)
-        print(HX.pressure_drop/HX.airflow.pressure, HX.ESM)
+        print(HX.pressure_drop/HX.gasflow_in.pressure, HX.ESM)
     
     HX.design_T_in = flow_in.temperature
     HX.design_delta_T = flow_in.delta_T_delta_h(cooling_deltah)

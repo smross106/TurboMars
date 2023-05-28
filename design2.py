@@ -11,6 +11,8 @@ from math import log
 import copy
 
 def run_machine(machines, T_start, p_start, mass_flow, label="", verbose=True):
+    rejection_T = False
+    
     running_machines = copy.deepcopy(machines)
     T_in = T_start
     p_in = p_start
@@ -23,6 +25,7 @@ def run_machine(machines, T_start, p_start, mass_flow, label="", verbose=True):
 
     machines_power = []
     machines_cooling = []
+    machines_reject_temperature_cooling = []
     pressures = [p_start]
     temperatures = [T_start]
     machines_efficiency = []
@@ -54,7 +57,7 @@ def run_machine(machines, T_start, p_start, mass_flow, label="", verbose=True):
                 compressor_type_numbers[2] += 1
             
             p_in = p_in * machine.pressure_ratio_stage
-            T_in = flow.temperature * ((np.power(machine.pressure_ratio_stage, flow.gm1/flow.gamma) - 1)/machine.efficiency + 1)
+            T_in = flow.temperature * ((np.power(machine.pressure_ratio_stage, flow.gm1/flow.gamma) - 1)/max(machine.efficiency, 0.1) + 1)
         
         elif type(machine) == component.HeatExchangerAdvanced:
             machine.gas_pressure_drop()
@@ -67,6 +70,7 @@ def run_machine(machines, T_start, p_start, mass_flow, label="", verbose=True):
 
             machines_power.append(machine.power)
             machines_cooling.append(machine.cooling)
+            machines_reject_temperature_cooling.append(machine.cooling * 0.5 * (T_in + T_in - flow.delta_T_delta_h(machine.cooling/mass_flow)))
 
             machine_label.append(str("H"+str(len(HX_label)+1)))
             HX_label.append(str("H"+str(len(HX_label)+1)))
@@ -75,10 +79,11 @@ def run_machine(machines, T_start, p_start, mass_flow, label="", verbose=True):
             p_in -= machine.pressure_drop
         
         elif type(machine) == component.CondensingHX:
-            machine.estimate_pressure_drop(p_in)
+            machine.estimate_pressure_drop()
 
             machines_power.append(machine.power)
             machines_cooling.append(machine.cooling)
+            machines_reject_temperature_cooling.append(machine.cooling * 210)
 
             machine_label.append(str("COND1"))
             HX_label.append(str("COND1"))
@@ -95,13 +100,16 @@ def run_machine(machines, T_start, p_start, mass_flow, label="", verbose=True):
         pressures.append(p_in)
         temperatures.append(T_in)
     
-    print(temperatures)
+    #print([int(T) for T in temperatures])
     #print(T_start, "\n", sum(machines_power), "\n", sum(machines_cooling), "\n")
     plt.plot(machine_label, temperatures, label=label)
-    return(sum(machines_power), sum(machines_cooling))
+    if rejection_T:
+        return(sum(machines_power), sum(machines_cooling), sum(machines_reject_temperature_cooling)/sum(machines_cooling))
+    else:
+        return(sum(machines_power), sum(machines_cooling))
 
 
-def generate_heat_exchanger(flow_hot, Q, A_HX_in, maximum_HX_PR, ESM_vector, coolant="ammonia"):
+def generate_heat_exchanger(flow_hot, deltaH, A_HX_in, maximum_HX_PR, ESM_vector, coolant="ammonia"):
     HX_PR_limit = maximum_HX_PR
     HX_PR_increase_ratio = 1.2
     HX_PR_start = 0.005
@@ -113,10 +121,9 @@ def generate_heat_exchanger(flow_hot, Q, A_HX_in, maximum_HX_PR, ESM_vector, coo
     HX_approved = False
 
     while (not HX_approved) and (HX_PR_increases < HX_PR_increases_limit):
-        hx1 = design.optimise_hx_pd(flow_hot, Q, A_HX_in, HX_PR_target, ESM_vector, coolant=coolant)
+        hx1 = design.optimise_hx_pd(flow_hot, deltaH, A_HX_in, HX_PR_target, ESM_vector, coolant=coolant)
         hx1_PR_actual = hx1.pressure_drop / flow_hot.pressure
 
-        HX_volume = hx1.total_length * (hx1.duct_size**2)
         if hx1_PR_actual < HX_PR_target:
             HX_approved = True
 
@@ -224,7 +231,7 @@ def design_machine(mass_flow, T_in, p_in, ESM_vector, num_intercoolers, rad_PR, 
 
         
         flow_hot = component.GasFlow(mass_flow, hot_T, flow_cold.pressure*rad_PR)
-        Q = flow_hot.delta_h_delta_T(abs(250-flow_hot.temperature)) 
+        deltaH = flow_hot.delta_h_delta_T(abs(250-flow_hot.temperature)) 
 
         total_compression_work += rad1.power
         total_compressor_weight += rad1.weight
@@ -239,7 +246,7 @@ def design_machine(mass_flow, T_in, p_in, ESM_vector, num_intercoolers, rad_PR, 
 
         A_HX_in = flow_hot.mass_flow / (flow_hot.density() * 10)
 
-        hx1 = generate_heat_exchanger(flow_hot, Q, A_HX_in, 1-(1/rad_PR), ESM_vector)
+        hx1 = generate_heat_exchanger(flow_hot, deltaH, A_HX_in, 1-(1/rad_PR), ESM_vector)
 
         total_cooling += hx1.cooling
         total_compression_work += hx1.power
@@ -346,10 +353,12 @@ def design_machine(mass_flow, T_in, p_in, ESM_vector, num_intercoolers, rad_PR, 
         precondenser = generate_heat_exchanger(flow, flow.delta_h_delta_T(T_out - 220), flow.mass_flow / (flow.density() * 10), 0.1, ESM_vector)
 
         p_out_best -= precondenser.pressure_drop
+        
+        condenser_flow_in = component.GasFlow(mass_flow, 220, p_out_best)
 
-        condenser = component.CondensingHX(mass_flow)
+        condenser = component.CondensingHX(condenser_flow_in)
         condenser.estimate_ESM()
-        condenser.estimate_pressure_drop(p_out_best)
+        condenser.estimate_pressure_drop()
         p_out_best -= condenser.pressure_drop
 
         buffer_tank = component.BufferTank(1500/1160)
@@ -403,6 +412,9 @@ def design_machine(mass_flow, T_in, p_in, ESM_vector, num_intercoolers, rad_PR, 
     return(all_machines, data_dict)
 
 def run_machines_day(machines, mass_flow, hours, design_T_in, design_p_in, verbose=True):
+    T_reject = False
+
+
     if verbose:print("Running daily variation")
     all_data = [[]]*8
     if hours[0]:
@@ -422,7 +434,10 @@ def run_machines_day(machines, mass_flow, hours, design_T_in, design_p_in, verbo
     if hours[7]:
         all_data[7] = run_machine(machines, 192.11, 773.11, mass_flow, "H21")
 
-    design_pow, design_cool = run_machine(machines, design_T_in, design_p_in, mass_flow, "Design")
+    if T_reject:
+        design_pow, design_cool, design_T = run_machine(machines, design_T_in, design_p_in, mass_flow, "Design")
+    else:
+        design_pow, design_cool = run_machine(machines, design_T_in, design_p_in, mass_flow, "Design")
 
     num_axials = 0
     num_radials = 0
@@ -444,19 +459,28 @@ def run_machines_day(machines, mass_flow, hours, design_T_in, design_p_in, verbo
     
     p_string = ""
     c_string = ""
+    if T_reject:
+        T_string = ""
 
     p_string += "{} \t".format(num_hxs-1)
     c_string += " \t"
     p_string += "Power \t"
     c_string += "Cooling \t"
+    if T_reject:
+        T_string += "ICTreject \t"
+
 
     for i in all_data:
         if len(i) != 0:
             p_string += "{:.4f} \t".format(i[0])
             c_string += "{:.4f} \t".format(i[1])
+            if T_reject:
+                T_string += "{:.2f} \t".format(i[2])
         else:
             p_string += "0 \t"
             c_string += "0 \t"
+            if T_reject:
+                T_string += "0 \t"
 
     p_string += "{:.4f} \t".format(design_pow)
     c_string += "{:.4f} \t".format(design_cool)
@@ -465,6 +489,8 @@ def run_machines_day(machines, mass_flow, hours, design_T_in, design_p_in, verbo
 
     print(p_string)
     print(c_string)
+    if T_reject:
+        print(T_string)
 
 def optimise_machine_design(mass_flow, design_T_in, design_p_in, scroll_target_p_out, PR_guess, N_rads, ESM_vector, condense=True, target_p_out=550e3, verbose=True):
 
@@ -479,10 +505,10 @@ def optimise_machine_design(mass_flow, design_T_in, design_p_in, scroll_target_p
     N_rads = 10"""
     rad_PR = PR_guess
     if verbose:print("Designing machine")
-    for i in range(4):
+    for i in range(10):
         
         machines, data_dict = design_machine(mass_flow, design_T_in, design_p_in, ESM_vector, N_rads, rad_PR, condense=condense, p_out_target=scroll_target_p_out, verbose=verbose)
-        if abs(data_dict["Output pressure"] -target_p_out) < 0.1e3:
+        if abs(data_dict["Output pressure"] -target_p_out) < 0.3e3:
             break
         else:
             if verbose:print("Iteration to improve output pressure")
@@ -491,6 +517,7 @@ def optimise_machine_design(mass_flow, design_T_in, design_p_in, scroll_target_p
     return(machines)
 
 def optimise_design_system():
+    # Design space evaluation
     mass_flows = [0.0113, 0.0225, 0.0338, 0.0451, 0.0902]
     design_T_ins = [199.85, 185.46, 183.04, 182.45, 180.18]
     design_p_ins = [770.6, 775.79, 775.79, 779.94, 779.94]
@@ -502,15 +529,24 @@ def optimise_design_system():
 
     condenses = [False, True, True, True, True]
     scroll_p_out = [550e3, 573e3, 573e3, 573e3, 573e3]
-
-    """mass_flow = 0.0113
-    design_T_in = 199.85
-    design_p_in = 770.6"""
-
+    
     N_radials = [10, 15, 20, 25, 30]
     PR_guesses = [1.833, 1.502, 1.358, 1.278, 1.2285]
+    
+    # Find the best number of radials in the determined optimal range
+    """mass_flows = [0.0225]
+    design_T_ins = [185.46]
+    design_p_ins = [775.79]
+    hours = [[True, True, True, False, False, False, False, True]]
+    condenses = [True]
+    scroll_p_out = [573e3]
 
-    ESM_vector = [1, .05, .075, 100]
+    N_radials = [10, 11, 12, 13, 14, 15]
+    PR_guesses = [1.833, 1.736, 1.659, 1.597, 1.540, 1.502]"""
+
+    
+
+    ESM_vector = [1, .149, .121, 100]
 
     for massflow_i, mass_flow in enumerate(mass_flows):
         design_T_in = design_T_ins[massflow_i]
@@ -528,7 +564,60 @@ def optimise_design_system():
         
         print("")
 
-# Find the best compressor stack in the design family
-#optimise_design_system()
 
-#plt.show()
+
+if __name__ == "__main__":
+
+    # Find the best compressor stack in the design family
+    #optimise_design_system()
+
+
+    # Best ESM when integrated with rest of system
+    mass_flow = 0.0225
+    design_T_in = 185.46
+    design_p_in = 775.79
+    hours = [True, True, True, False, False, False, False, True]
+    condense = True
+    scroll_p_out = 573e3
+
+    # Best ESM when taken alone
+    """mass_flow = 0.0113
+    design_T_in = 199.9
+    design_p_in = 770.60
+    hours = [True, True, True, True, True, True, True, True]
+    condense = False
+    scroll_p_out = 573e3"""
+
+
+    N_radial = 15
+    PR_guess = 1.502
+
+    ESM_vector = [1, 0.149, 0.121, 100]
+
+    all_machines = optimise_machine_design(
+                    mass_flow, design_T_in, design_p_in, scroll_p_out, PR_guess, N_radial, ESM_vector, condense, verbose=True)
+
+    total_weight = 0
+    for m in all_machines:
+        if type(m) == component.RadialStage:
+            print("chi_1", np.rad2deg(np.arctan(m.Vx_in/(m.R_mean_inlet*m.speed_rad))))
+            print("chi_2", m.backsweep_angle)
+            print("R_mean", m.R_mean_imp_exit - m.R_hub_inlet)
+            print("span_1", m.bladeheight_in)
+            print("span_2", m.bladeheight_imp_exit)
+            print("spinner", m.R_hub_inlet)
+            print("stator radius", m.R_stator_exit)
+            print("stator angle", m.rotor_exit_flow_angle)
+            print("RPM", m.speed)
+            print("P in", m.gasflow_in.pressure)
+            print("T in", m.gasflow_in.temperature)
+            print("p out", m.gasflow_in.pressure * m.pressure_ratio_stage)
+            print("")
+        #print(m)
+        #total_weight += m.weight
+        
+        pass
+
+    #print("#####")
+    #print(total_weight)
+    # run_machines_day(all_machines, mass_flow, hours, design_T_in, design_p_in, verbose=False)

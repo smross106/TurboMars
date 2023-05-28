@@ -345,6 +345,8 @@ components.append(sab)
 components.append(cc_meth)
 components.append(cc_ox)
 
+print(cc_ox.power, cc_ox.cooling)
+
 total_W = 0
 total_P_day = 0
 total_P_night = 0
@@ -370,5 +372,8 @@ total_E = total_P_night/1000 * 12
 
 total_C_capacity = max(total_C_day, total_C_night)
 
+print(cc_ox.power, cc_ox.mass_flow*3600*24)
+
 print("W", int(total_W), "P", int(total_P_capacity), "C", int(total_C_capacity), "E", int(total_E))
 print("ESM", total_W+.149*total_P_capacity+.121*total_C_capacity+5*total_E)
+print(cc_ox.power+cc_meth.power)

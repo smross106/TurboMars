@@ -121,7 +121,7 @@ class AxialStage(Component):
         
         self.weight = weight
 
-        return(weight)
+        return(self.weight)
 
     def estimate_ESM(self):
         self.power = self.work_stage * self.gasflow_in.mass_flow / self.efficiency
@@ -130,8 +130,6 @@ class AxialStage(Component):
         self.ESM = self.weight + power_weight
 
         self.cooling = 0
-
-        return(self.ESM)
 
     def efficiency_cordier(self, verbose=False):
         # Estimate efficiency based on the Cordier plot
@@ -360,8 +358,8 @@ class RadialStage(Component):
         # Add fixings approximation
         compressor_weight = (casing_weight + diffuser_weight + hub_weight) * 1.18
 
-        if self.R_mean_imp_exit < self.R_mean_inlet:
-            compressor_weight = 1e5
+        #if self.R_mean_imp_exit < self.R_tip_inlet:
+        #    compressor_weight = 1e5
         
         self.rotor_weight = (casing_weight + hub_weight) * 1.18
         self.stator_weight = diffuser_weight
@@ -611,7 +609,20 @@ class HeatExchangerAdvanced(Component):
         self.wall_thermal_conductivity = wall_thermal_conductivity
 
         self.coolant_velocity = coolant_velocity
-        if coolant == "glycol":
+
+        if coolant == "water":
+            # Used for validation case only
+            # Data from Thermofluids databook
+            self.coolant_inlet = 298
+            self.coolant_viscosity = 0.000797
+            self.coolant_density = 1000
+            self.coolant_dT = 20
+            self.coolant_thermal_conductivity = 0.61450	
+            self.coolant_Pr = 6.13
+            self.coolant_max_T_out = 373
+            self.coolant_T_in = 298
+
+        elif coolant == "glycol":
             # Coolant in fluid side is ethylene glycol
             # Data from https://wiki.anton-paar.com/en/automotive-antifreeze/
             # and https://www.researchgate.net/publication/230074410_Thermal_Conductivity_Density_Viscosity_and_Prandtl-Numbers_of_Ethylene_Glycol-Water_Mixtures
@@ -659,11 +670,11 @@ class HeatExchangerAdvanced(Component):
             self.coolant_inlet = 200
             self.coolant_viscosity = 25.696e-5
             self.coolant_density = 683.88
-            self.coolant_dT = 40
+            self.coolant_dT = 15
             self.coolant_thermal_conductivity = 0.58261
             self.coolant_Pr = 1.9613
-            self.coolant_max_T_out = 312
-            self.coolant_T_in = 210
+            self.coolant_max_T_out = 322
+            self.coolant_T_in = 250 - self.coolant_dT
         
         self.neglect_peak_velocity = neglect_peak_velocity
 
@@ -734,7 +745,7 @@ class HeatExchangerAdvanced(Component):
         # 4 walls in a nozzle
         nozzle_weight = nozzle_wall_area * duct_wall_thickness * 2700
 
-        self.weight = duct_weight + tubes_weight + diffuser_weight + nozzle_weight
+        self.weight = duct_weight + tubes_weight + diffuser_weight + nozzle_weight 
 
     def heat_transfer_row(self):
         # Heat transfer inside the tube
@@ -749,6 +760,9 @@ class HeatExchangerAdvanced(Component):
             # Unlikely for glycol
             # Dottis-Boelter correlation
             Nu_coolant = 0.023 * np.power(Re_coolant, 0.8) * np.power(self.coolant_Pr, 1/3)
+        
+        if Nu_coolant < 1:
+            Nu_coolant = 1
         
         heat_transfer_coefficient_coolant = Nu_coolant * self.coolant_thermal_conductivity / D_internal
         coolant_thermal_resistance = (np.pi * self.tube_diameter) / (heat_transfer_coefficient_coolant * np.pi * D_internal)
@@ -822,9 +836,16 @@ class HeatExchangerAdvanced(Component):
             else:
                 # Chilton-Colburn analogy
                 Nu_gas = 0.125 * f * Re_tubes * np.power(self.gasflow_in.Pr, 1/3)
+            
+            if Nu_gas < 1:
+                Nu_gas = 1
+
+            self.Nu_gas = Nu_gas
 
             heat_transfer_coefficient_gas = Nu_gas * self.gasflow_in.k / D_hydraulic
             gas_thermal_resistance = 1 / heat_transfer_coefficient_gas
+
+        self.Re_tubes = Re_tubes
 
         thermal_resistance = coolant_thermal_resistance + wall_thermal_resistance + gas_thermal_resistance
 
@@ -1067,8 +1088,8 @@ class HeatExchangerAdvanced(Component):
         out_str = ""
         relative_pd = 100 * self.pressure_drop / self.gasflow_in.pressure
         if self.geometry == "wall":
-            out_str += " \t A sintered tube-wall heat exchanger, with entry pressure of {:.0f}Pa and a drop of {:.1f}%".format(
-                self.gasflow_in.pressure, relative_pd)
+            out_str += " \t A sintered tube-wall heat exchanger, with entry pressure/temperature of {:.0f}Pa/{:.1f}K and a drop of {:.1f}%".format(
+                self.gasflow_in.pressure, self.gasflow_in.temperature, relative_pd)
         elif self.geometry == "staggered":
             out_str += " \t A staggered tube heat exchanger, with entry pressure of {:.0f}Pa and a drop of {:.1f}%".format(
                 self.gasflow_in.pressure, relative_pd)
@@ -1139,8 +1160,8 @@ class ScrollCompressor(Component):
         return(out_str)
 
 class CondensingHX(Component):
-    def __init__(self, mass_flow):
-        self.mass_flow = mass_flow
+    def __init__(self, gasflow_in):
+        self.gasflow_in = gasflow_in
 
         self.cooling_coefficient = 350e3 # J/kg to condense carbon dioxide in the right pressure range
         self.power_coefficient = 0.001   # We/Wth, average for modelled HXs is 0.000392704
@@ -1149,7 +1170,7 @@ class CondensingHX(Component):
         self.pressure_drop_coefficient = 1e-7 # 1/(J/kg), average for modelled HXs is 3.5E-8
     
     def estimate_cooling(self):
-        self.cooling = self.mass_flow * self.cooling_coefficient
+        self.cooling = self.gasflow_in.mass_flow * self.cooling_coefficient
 
     def estimate_power(self):
         self.power = self.cooling * self.power_coefficient
@@ -1157,16 +1178,29 @@ class CondensingHX(Component):
     def estimate_weight(self):
         self.weight = self.cooling * self.weight_coefficient
     
-    def estimate_pressure_drop(self, pressure_in):
+    def estimate_pressure_drop(self):
         pressure_drop_ratio = self.pressure_drop_coefficient * self.cooling_coefficient
 
-        self.pressure_drop = pressure_drop_ratio * pressure_in
+        self.pressure_drop = pressure_drop_ratio * self.gasflow_in.pressure
 
     
     def estimate_ESM(self):
         self.estimate_cooling()
         self.estimate_weight()
         self.estimate_power()
+    
+    def __repr__(self):
+        out_str = ""
+        out_str += " \t A condensing heat exchanger, with entry pressure/temperature of {:.0f}Pa/{:.1f}K and a drop of {:.1f}%".format(
+                self.gasflow_in.pressure, self.gasflow_in.temperature, self.pressure_drop/self.gasflow_in.pressure)
+        out_str += "\n"
+        out_str += "Cooling power: {:.0f}W ".format(
+            self.cooling)
+        out_str += "\n"
+        out_str += "Total installed weight of {:.2f}kg".format(self.weight)
+        out_str += "\n"
+        out_str += "Coolant pumping power of {:.2f}W".format(self.power)
+        return(out_str)
 
 
 class BufferTank(Component):
@@ -1175,7 +1209,7 @@ class BufferTank(Component):
         self.h24 = False
         self.night = False
 
-        self.wall_density = 8000
+        self.wall_density = 2800
         self.wall_thickness = 2e-3
 
         self.estimate_ESM()
@@ -1192,4 +1226,11 @@ class BufferTank(Component):
         self.estimate_weight()
         self.estimate_power()
         self.cooling = 0
+    
+    def __repr__(self):
+        out_str = ""
+        out_str += " \t A buffer tank with capacity {:.1f}m3".format(self.volume_capacity)
+        out_str += "\n"
+        out_str += "Installed weight {:.2f}kg".format(self.weight)
+        return(out_str)
 
