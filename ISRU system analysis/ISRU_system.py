@@ -1,12 +1,88 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from component import Component, CondensingHX, BufferTank
 
-"""
-This makes full use of Lukas Schrenk's MIT masters thesis
 
-Available at https://web.archive.org/web/20191011015910/http://lukas-schrenk.com/files/MasterThesis_Schrenk.pdf
-"""
+
+class Component(object):
+    def __init__(self):
+        pass
+
+class CondensingHX(Component):
+    def __init__(self, gasflow_in):
+        self.gasflow_in = gasflow_in
+
+        self.cooling_coefficient = 350e3 # J/kg to condense carbon dioxide in the right pressure range
+        self.power_coefficient = 0.001   # We/Wth, average for modelled HXs is 0.000392704
+        self.weight_coefficient = 0.006  # kg/Wth, average for modelled HXs is 0.002016862
+
+        self.pressure_drop_coefficient = 1e-7 # 1/(J/kg), average for modelled HXs is 3.5E-8
+    
+    def estimate_cooling(self):
+        self.cooling = self.gasflow_in.mass_flow * self.cooling_coefficient
+
+    def estimate_power(self):
+        self.power = self.cooling * self.power_coefficient
+    
+    def estimate_weight(self):
+        self.weight = self.cooling * self.weight_coefficient
+    
+    def estimate_pressure_drop(self):
+        pressure_drop_ratio = self.pressure_drop_coefficient * self.cooling_coefficient
+
+        self.pressure_drop = pressure_drop_ratio * self.gasflow_in.pressure
+
+    
+    def estimate_ESM(self):
+        self.estimate_cooling()
+        self.estimate_weight()
+        self.estimate_power()
+    
+    def __repr__(self):
+        out_str = ""
+        out_str += " \t A condensing heat exchanger, with entry pressure/temperature of {:.0f}Pa/{:.1f}K and a drop of {:.1f}%".format(
+                self.gasflow_in.pressure, self.gasflow_in.temperature, self.pressure_drop/self.gasflow_in.pressure)
+        out_str += "\n"
+        out_str += "Cooling power: {:.0f}W ".format(
+            self.cooling)
+        out_str += "\n"
+        out_str += "Total installed weight of {:.2f}kg".format(self.weight)
+        out_str += "\n"
+        out_str += "Coolant pumping power of {:.2f}W".format(self.power)
+        return(out_str)
+
+
+class BufferTank(Component):
+    def __init__(self, volume_capacity):
+        self.volume_capacity = volume_capacity
+        self.h24 = False
+        self.night = False
+
+        self.wall_density = 2800
+        self.wall_thickness = 2e-3
+
+        self.estimate_ESM()
+    
+    def estimate_weight(self):
+        radius = np.power(self.volume_capacity*1.1 / (np.pi * 4/3), 1/3)
+        area = np.power(radius, 2) * 4 * np.pi
+        self.weight = area * self.wall_thickness * self.wall_density
+
+    def estimate_power(self):
+        self.power = 0
+    
+    def estimate_ESM(self):
+        self.estimate_weight()
+        self.estimate_power()
+        self.cooling = 0
+    
+    def __repr__(self):
+        out_str = ""
+        out_str += " \t A buffer tank with capacity {:.1f}m3".format(self.volume_capacity)
+        out_str += "\n"
+        out_str += "Installed weight {:.2f}kg".format(self.weight)
+        return(out_str)
+
+
 
 class WaterElectrolyserBasic(Component):
     def __init__(self, mass_flow, fudge_mass=4*3, fudge_power=1):

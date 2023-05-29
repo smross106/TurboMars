@@ -1,4 +1,6 @@
 import component
+import design
+
 
 import numpy as np
 from scipy import optimize
@@ -6,7 +8,6 @@ import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings('ignore')
 import time
-import design
 from math import log
 import copy
 
