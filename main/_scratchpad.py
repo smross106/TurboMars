@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-
+"""
 ### Plotting state of the art 
 
 fig, ax = plt.subplots(figsize=(2.96, 2.22))
@@ -63,7 +63,7 @@ plt.ylabel(r"Specific work, kJ/kg $\textrm{CO}_2$", usetex=True, fontsize=10)
 plt.title(r"Existing Atmospheric ISRU Systems", usetex=True, fontsize=12)
 plt.show()
 
-
+"""
 
 
 """
@@ -1385,6 +1385,64 @@ ax2.set_ylim(0.3, 1.0)
 #ax2.set_ylim(0, 400)
 
 plt.title("Diffuser performance", usetex=True, fontsize=12)
+plt.show()
+
+"""
+
+"""
+fig, ax1 = plt.subplots(figsize=(4.5, 2.22))
+fig.subplots_adjust(left=0.2, right=0.95, bottom=0.25)
+
+plt.rcParams.update({
+    "text.usetex": True,
+    'mathtext.default': 'regular',
+    "font.size":10
+})
+
+titles = ["Inlet\nangle","Outlet\nangle","Radius","Inlet\nspan","Outlet\nspan","Inlet\nhub\nradius"]
+plus_values = [0.947625, 0.74727, 0.213495, -0.64108, -0.944622, -0.335664]
+minus_values = [0.5369875, 0.38627, 0.28135, 0.07502, -0.072765, 0.056943]
+
+pls_v1 = []
+pls_v2 = []
+mns_v1 = []
+mns_v2 = []
+
+for i in range(len(titles)):
+    if plus_values[i] > 0:
+        pls_v1.append(plus_values[i])
+        mns_v1.append(0)
+    else:
+        pls_v1.append(0)
+        mns_v1.append(-plus_values[i])
+    
+    if minus_values[i] > 0:
+        pls_v2.append(minus_values[i])
+        mns_v2.append(0)
+    else:
+        pls_v2.append(0)
+        mns_v2.append(-minus_values[i])
+
+print(pls_v1)
+print(mns_v1)
+
+central_values = [0,0,0,0,0,0]
+xrange = [0,1,2,3,4,5]
+
+ax1.scatter(xrange[0:3], central_values[0:3])
+ax1.errorbar(xrange[0:3], central_values[0:3], yerr=([mns_v1[0:3], pls_v1[0:3]]), capsize=3, fmt="o", c="tab:blue")
+ax1.errorbar(xrange[0:3], central_values[0:3], yerr=([mns_v2[0:3], pls_v2[0:3]]), capsize=3, fmt="o", c="tab:blue")
+
+ax1.scatter(xrange[3:6], central_values[3:6])
+ax1.errorbar(xrange[3:6], central_values[3:6], yerr=([mns_v1[3:6], pls_v1[3:6]]), capsize=3, fmt="o", c="tab:orange")
+ax1.errorbar(xrange[3:6], central_values[3:6], yerr=([mns_v2[3:6], pls_v2[3:6]]), capsize=3, fmt="o", c="tab:orange")
+
+
+ax1.set_xticks(xrange)
+ax1.set_xticklabels(titles, rotation=0)
+ax1.set_ylabel("Change in efficiency\n(% points)")
+ax1.set_title("Compressor CFD sensitivity analysis")
+
 plt.show()
 
 """
